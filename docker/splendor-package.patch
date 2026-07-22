@@ -1,0 +1,14 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2b2d71a..065fe9f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -96,4 +96,9 @@ if(SPLENDOR_BUILD_PYBIND)
+         SPLENDOR_BUILD_TYPE="$<CONFIG>"
+         SPLENDOR_BUILD_OPTIMIZED=$<IF:$<CONFIG:Debug>,0,1>
+     )
++
++    install(TARGETS splendor_native
++        LIBRARY DESTINATION .
++        RUNTIME DESTINATION .
++    )
+ endif()
