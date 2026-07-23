@@ -1,15 +1,7 @@
 import { ReactElement, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  IconChartBar,
-  IconHome,
-  IconInfoCircle,
-  IconPlayerPlay,
-} from '@tabler/icons-react';
-import {
-  ActionDisplayDTO,
   ActionInfoDTO,
   CatalogCardDTO,
-  CatalogNobleDTO,
   BoardStateDTO,
   EngineJobStatusDTO,
   EngineThinkRequest,
@@ -26,26 +18,42 @@ import { ActionLabel } from './components/ActionLabel';
 import { CardView } from './components/board/CardView';
 import { NobleView } from './components/board/NobleView';
 import { BoardViewport } from './components/board/BoardViewport';
+import { TopNav } from './components/TopNav';
+import { HomePage } from './components/pages/HomePage';
+import { AboutPage } from './components/pages/AboutPage';
 import { downloadBoardImage } from './utils/exportBoardImage';
 import { fetchJSON } from './lib/apiClient';
 import {
   HomeView,
-  VIEW_PATHS,
   analysisPublishInterval,
-  continuationSuffix,
   formatEvalBarValue,
   formatTopMoveEval,
-  homeViewFromPath,
   moveAnalysisKey,
   p0WinningEval,
   searchTypeLabel,
   topMoveEvalClass,
   winnerLabel,
 } from './lib/gameUi';
+import type {
+  DeepAnalysisCategory,
+  DeepAnalysisEntry,
+  DeepAnalysisSearchResult,
+  HighlightedVariation,
+  MoveGroupKey,
+  MoveLogDisplayEntry,
+  UiStatus,
+  VariationBranch,
+  VariationMove,
+} from './lib/appModels';
+import { useMoveLogModel } from './hooks/useMoveLogModel';
+import { useHomeView } from './hooks/useHomeView';
+import { useCatalogData } from './hooks/useCatalogData';
+import { useAnimatedEval } from './hooks/useAnimatedEval';
+import { useCatalogIndex } from './hooks/useCatalogIndex';
+import { useEnginePolling } from './hooks/useEnginePolling';
 import {
   isBuyFaceupAction,
   isBuyReservedAction,
-  isContinuationAction,
   isNobleAction,
   isReserveDeckAction,
   isReserveFaceupAction,
@@ -56,11 +64,9 @@ import {
   isTake3Action,
 } from './lib/actionEncoding';
 
-type UiStatus = 'IDLE' | 'WAITING_ENGINE' | 'WAITING_PLAYER' | 'WAITING_REVEAL' | 'GAME_OVER';
 type AnalysisPanelTab = 'ANALYSIS' | 'MOVES';
 const COLOR_ORDER: CatalogCardDTO['bonus_color'][] = ['white', 'blue', 'green', 'red', 'black'];
 
-const POLL_MS = 400;
 const DEFAULT_DEEP_ANALYSIS_SIMULATIONS = 50_000;
 const DEFAULT_GPU_EVAL_BATCH_SIZE = 64;
 const MAX_EVAL_BATCH_SIZE = 64;
@@ -68,62 +74,6 @@ const DEFAULT_ALPHABETA_DEPTH = 3;
 const DEFAULT_SEARCH_SIMULATIONS = 200_000;
 const DEFAULT_BOOTSTRAP_SIMULATIONS_PER_ACTION = 20_000;
 const MAX_SEARCH_SIMULATIONS = 1_000_000;
-
-interface MoveLogRow {
-  moveNumber: number;
-  moveNumberLabel: string;
-  p0?: MoveLogDisplayEntry;
-  p1?: MoveLogDisplayEntry;
-}
-
-type MoveLogDisplayEntry = MoveLogEntryDTO & {
-  notation: string;
-  turnLabel: string;
-  fullMoveNumber: number;
-  continuationIndex: number;
-};
-
-interface HighlightedMove {
-  actor: Seat;
-  resultTurnIndex: number;
-  resultSnapshotIndex: number;
-}
-
-interface HighlightedVariation {
-  branchId: number;
-  moveIndex: number;
-}
-
-interface VariationMove {
-  kind: 'move' | 'edit_faceup' | 'edit_reserved' | 'edit_noble';
-  actor: Seat;
-  actionIdx: number;
-  replayActionIdxList?: number[];
-  label: string;
-  display?: ActionDisplayDTO | null;
-  fullMoveNumber: number;
-  targetSnapshotIndex: number;
-  targetTurnIndex: number;
-  jumpBySnapshot: boolean;
-  tier?: number;
-  slot?: number;
-  seat?: Seat;
-  cardId?: number;
-  nobleId?: number;
-}
-
-interface VariationBranch {
-  id: number;
-  anchorSnapshotIndex: number;
-  moves: VariationMove[];
-}
-
-type MoveToken =
-  | { kind: 'mainline_row'; row: MoveLogRow; rowIdx: number }
-  | { kind: 'deviation_block'; branch: VariationBranch };
-
-type DeepAnalysisCategory = 'Best' | 'Good' | 'Mistake' | 'Blunder' | 'Unknown';
-type MoveGroupKey = 'buy' | 'reserve' | 'take' | 'return' | 'noble' | 'other';
 
 const MOVE_GROUP_LABELS: Record<MoveGroupKey, string> = {
   buy: 'Buy',
@@ -133,28 +83,6 @@ const MOVE_GROUP_LABELS: Record<MoveGroupKey, string> = {
   noble: 'Noble',
   other: 'Other',
 };
-
-interface DeepAnalysisEntry {
-  category: DeepAnalysisCategory;
-  playedActionIdx: number;
-  bestActionIdx: number | null;
-  playedQ: number | null;
-  bestQ: number | null;
-  qLoss: number | null;
-}
-
-type DeepAnalysisSearchResult = NonNullable<EngineJobStatusDTO['result']>;
-
-function UiIcon({ name }: { name: 'home' | 'play' | 'analysis' | 'about' }) {
-  const Icon = name === 'home'
-    ? IconHome
-    : name === 'play'
-      ? IconPlayerPlay
-      : name === 'analysis'
-        ? IconChartBar
-        : IconInfoCircle;
-  return <Icon className="ui-icon" size={17} stroke={1.75} aria-hidden="true" />;
-}
 
 function isBlockingPendingReveal(reveal: GameSnapshotDTO['pending_reveals'][number]): boolean {
   return reveal.zone !== 'reserved_card';
@@ -177,8 +105,6 @@ function parseRevealKey(key: string): { zone: 'faceup_card' | 'reserved_card' | 
 }
 
 export function App() {
-  const [catalogCards, setCatalogCards] = useState<CatalogCardDTO[]>([]);
-  const [catalogNobles, setCatalogNobles] = useState<CatalogNobleDTO[]>([]);
   const numSimulations = 400;
   const [searchSimulations, setSearchSimulations] = useState(DEFAULT_SEARCH_SIMULATIONS);
   const [deepAnalysisSimulations, setDeepAnalysisSimulations] = useState(DEFAULT_DEEP_ANALYSIS_SIMULATIONS);
@@ -194,21 +120,7 @@ export function App() {
   const [alphabetaDepth, setAlphabetaDepth] = useState(DEFAULT_ALPHABETA_DEPTH);
   const playerSeat: Seat = 'P0';
   const seed = '';
-  const [homeView, setHomeViewState] = useState<HomeView>(() => homeViewFromPath(window.location.pathname));
-
-  function setHomeView(nextView: HomeView): void {
-    setHomeViewState(nextView);
-    const nextPath = VIEW_PATHS[nextView];
-    if (window.location.pathname !== nextPath) {
-      window.history.pushState({ view: nextView }, '', nextPath);
-    }
-  }
-
-  useEffect(() => {
-    const onPopState = () => setHomeViewState(homeViewFromPath(window.location.pathname));
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
-  }, []);
+  const { homeView, setHomeView } = useHomeView();
   const [revealSelections, setRevealSelections] = useState<Record<string, string>>({});
   const [activeRevealKey, setActiveRevealKey] = useState<string | null>(null);
   const [showBoardAnalysis, setShowBoardAnalysis] = useState(true);
@@ -222,7 +134,6 @@ export function App() {
   const [variationBranches, setVariationBranches] = useState<VariationBranch[]>([]);
   const [jobStatus, setJobStatus] = useState<EngineJobStatusDTO | null>(null);
   const [uiStatus, setUiStatus] = useState<UiStatus>('IDLE');
-  const [displayedP0EvalValue, setDisplayedP0EvalValue] = useState<number | null>(null);
   const [analysisPanelTab, setAnalysisPanelTab] = useState<AnalysisPanelTab>('ANALYSIS');
   const [deepAnalysisBySnapshot, setDeepAnalysisBySnapshot] = useState<Record<string, DeepAnalysisEntry>>({});
   const [deepAnalysisSearchBySnapshot, setDeepAnalysisSearchBySnapshot] = useState<Record<string, DeepAnalysisSearchResult>>({});
@@ -233,13 +144,22 @@ export function App() {
   const [activeVariationSelection, setActiveVariationSelection] = useState<HighlightedVariation | null>(null);
 
   const [error, setError] = useState<string | null>(null);
+  const { catalogCards, catalogNobles } = useCatalogData(setError);
+  const {
+    cardsByTier,
+    cardsByTierAndColor,
+    groupedCatalogNobles,
+    cardOptionLabel,
+    nobleOptionLabel,
+    findCatalogCard,
+    findCatalogCardId,
+    findCatalogNobleId,
+  } = useCatalogIndex(catalogCards, catalogNobles);
 
   useEffect(() => {
     snapshotRef.current = snapshot;
   }, [snapshot]);
 
-  const pollRef = useRef<number | null>(null);
-  const activeJobIdRef = useRef<string | null>(null);
   const activeVariationBranchIdRef = useRef<number | null>(null);
   const variationBranchIdCounterRef = useRef<number>(1);
   const loadedHistoricalMainlineLengthRef = useRef<number>(0);
@@ -256,8 +176,6 @@ export function App() {
   }
   const analysisSettingsRef = useRef<HTMLDivElement | null>(null);
   const moveLogGridRef = useRef<HTMLDivElement | null>(null);
-  const evalAnimationFrameRef = useRef<number | null>(null);
-  const displayedP0EvalRef = useRef<number | null>(null);
   const autoStartViewRef = useRef<HomeView | null>(null);
   const isSetupLikeView = homeView === 'ANALYSIS';
   const isQuickGameView = homeView === 'QUICK';
@@ -267,253 +185,29 @@ export function App() {
   const lastSnapshotSearchKeyRef = useRef<string | null>(null);
   const autoAnalyzeOnNavigation = showBoardAnalysis;
 
-  const cardsByTier = useMemo(() => {
-    return catalogCards.reduce<Record<number, CatalogCardDTO[]>>((acc, card) => {
-      if (!acc[card.tier]) {
-        acc[card.tier] = [];
-      }
-      acc[card.tier].push(card);
-      return acc;
-    }, {});
-  }, [catalogCards]);
-  const cardsByTierAndColor = useMemo(() => {
-    const grouped: Record<number, Record<CatalogCardDTO['bonus_color'], CatalogCardDTO[]>> = {
-      1: { white: [], blue: [], green: [], red: [], black: [] },
-      2: { white: [], blue: [], green: [], red: [], black: [] },
-      3: { white: [], blue: [], green: [], red: [], black: [] },
-    };
-    for (const card of catalogCards) {
-      grouped[card.tier][card.bonus_color].push(card);
-    }
-    for (const tier of [1, 2, 3] as const) {
-      for (const color of COLOR_ORDER) {
-        grouped[tier][color].sort((a, b) => {
-          const aTotal = a.cost.white + a.cost.blue + a.cost.green + a.cost.red + a.cost.black;
-          const bTotal = b.cost.white + b.cost.blue + b.cost.green + b.cost.red + b.cost.black;
-          if (aTotal !== bTotal) return aTotal - bTotal;
-          if (a.points !== b.points) return a.points - b.points;
-          return a.id - b.id;
-        });
-      }
-    }
-    return grouped;
-  }, [catalogCards]);
-  const moveLogEntries = useMemo<MoveLogEntryDTO[]>(() => {
-    if (loadedMoveLog && loadedMoveLog.length > 0) {
-      return loadedMoveLog;
-    }
-    return snapshot?.move_log ?? [];
-  }, [loadedMoveLog, snapshot?.move_log]);
-  const moveLogDisplayEntries = useMemo<MoveLogDisplayEntry[]>(() => {
-    let fullMoveNumber = 0;
-    let continuationIndex = 0;
+  const {
+    moveLogEntries,
+    moveLogRows,
+    mainlineMoveNumberBySnapshot,
+    variationBranchByAnchor,
+    moveLogTokens,
+    currentSnapshotIndex,
+    mainlineMoveSnapshotIndices,
+    mainlineMoveTurnIndices,
+    isLoadedMainlineExtensionState,
+    canStepVisibleMainlineBackward,
+    canStepVisibleMainlineForward,
+    highlightedMove,
+    highlightedVariation,
+  } = useMoveLogModel({
+    loadedMoveLog,
+    snapshot,
+    variationBranches,
+    activeVariationSelection,
+    loadedHistoricalMainlineLength: loadedHistoricalMainlineLengthRef.current,
+    loadedHistoricalMainlineTailSnapshot: loadedHistoricalMainlineTailSnapshotRef.current,
+  });
 
-    return moveLogEntries.map((move) => {
-      const isContinuation = isContinuationAction(move.action_idx);
-      const displayActor = move.actor;
-
-      if (isContinuation) {
-        continuationIndex += 1;
-      } else {
-        continuationIndex = 0;
-        if (displayActor === 'P0') {
-          fullMoveNumber += 1;
-        } else if (fullMoveNumber <= 0) {
-          fullMoveNumber = 1;
-        }
-      }
-
-      const suffix = continuationSuffix(continuationIndex);
-      const base = `${fullMoveNumber}${suffix}`;
-      const notation = displayActor === 'P0' ? `${base}.` : `${base}...`;
-
-      return {
-        ...move,
-        actor: displayActor,
-        notation,
-        turnLabel: base,
-        fullMoveNumber,
-        continuationIndex,
-      };
-    });
-  }, [moveLogEntries]);
-  const moveLogRows = useMemo<MoveLogRow[]>(() => {
-    const rows: MoveLogRow[] = [];
-    const rowByLabel = new Map<string, number>();
-    for (const move of moveLogDisplayEntries) {
-      const moveNumberLabel = move.turnLabel;
-      const existingIdx = rowByLabel.get(move.turnLabel);
-      if (existingIdx != null) {
-        const existing = rows[existingIdx];
-        if (move.actor === 'P0') {
-          if (existing.p0 == null) {
-            existing.p0 = move;
-          } else {
-            rows.push({ moveNumber: move.fullMoveNumber, moveNumberLabel, p0: move });
-          }
-        } else if (existing.p1 == null) {
-          existing.p1 = move;
-        } else {
-          rows.push({ moveNumber: move.fullMoveNumber, moveNumberLabel, p1: move });
-        }
-      } else {
-        rows.push(
-          move.actor === 'P0'
-            ? { moveNumber: move.fullMoveNumber, moveNumberLabel, p0: move }
-            : { moveNumber: move.fullMoveNumber, moveNumberLabel, p1: move }
-        );
-        rowByLabel.set(move.turnLabel, rows.length - 1);
-      }
-    }
-    return rows;
-  }, [moveLogDisplayEntries]);
-  const mainlineMoveNumberBySnapshot = useMemo<Map<number, number>>(() => {
-    const out = new Map<number, number>();
-    for (const row of moveLogRows) {
-      if (row.p0?.result_snapshot_index != null) {
-        out.set(row.p0.result_snapshot_index, row.moveNumber);
-      }
-      if (row.p1?.result_snapshot_index != null) {
-        out.set(row.p1.result_snapshot_index, row.moveNumber);
-      }
-    }
-    return out;
-  }, [moveLogRows]);
-  const variationBranchByAnchor = useMemo<Map<number, VariationBranch[]>>(() => {
-    const out = new Map<number, VariationBranch[]>();
-    for (const branch of variationBranches) {
-      const existing = out.get(branch.anchorSnapshotIndex);
-      if (existing) {
-        existing.push(branch);
-      } else {
-        out.set(branch.anchorSnapshotIndex, [branch]);
-      }
-    }
-    return out;
-  }, [variationBranches]);
-  const moveLogTokens = useMemo<MoveToken[]>(() => {
-    const tokens: MoveToken[] = [];
-    for (let rowIdx = 0; rowIdx < moveLogRows.length; rowIdx++) {
-      const row = moveLogRows[rowIdx];
-      tokens.push({ kind: 'mainline_row', row, rowIdx });
-      // Emit deviation blocks anchored on p0's snapshot, then p1's snapshot,
-      // so each branch appears immediately after the half-move it diverges from.
-      const p0Snap = row.p0?.result_snapshot_index ?? null;
-      const p1Snap = row.p1?.result_snapshot_index ?? null;
-      const anchors: number[] = [];
-      if (p0Snap != null) anchors.push(p0Snap);
-      if (p1Snap != null && p1Snap !== p0Snap) anchors.push(p1Snap);
-      for (const snap of anchors) {
-        for (const branch of (variationBranchByAnchor.get(snap) ?? [])) {
-          tokens.push({ kind: 'deviation_block', branch });
-        }
-      }
-    }
-    // Pre-game deviations (anchor = 0) before the first row.
-    const preGame = variationBranchByAnchor.get(0) ?? [];
-    if (preGame.length > 0) {
-      const preTokens: MoveToken[] = [];
-      for (const branch of preGame) {
-        preTokens.push({ kind: 'deviation_block', branch });
-      }
-      tokens.unshift(...preTokens);
-    }
-    return tokens;
-  }, [moveLogRows, variationBranchByAnchor]);
-  const currentSnapshotIndex = useMemo<number>(() => {
-    if (!snapshot) {
-      return 0;
-    }
-    if (snapshot.current_snapshot_index != null) {
-      return Number(snapshot.current_snapshot_index);
-    }
-    if (moveLogEntries.length === 0) {
-      return 0;
-    }
-    let bestSnapshotIndex = 0;
-    for (const move of moveLogEntries) {
-      if (move.result_turn_index > snapshot.turn_index) {
-        continue;
-      }
-      if (move.result_snapshot_index > bestSnapshotIndex) {
-        bestSnapshotIndex = move.result_snapshot_index;
-      }
-    }
-    return bestSnapshotIndex;
-  }, [snapshot, moveLogEntries]);
-  const mainlineMoveSnapshotIndices = useMemo<number[]>(() => {
-    const indices = moveLogEntries
-      .map((move) => move.result_snapshot_index)
-      .filter((value) => Number.isFinite(value) && value > 0);
-    const uniqueInOrder = Array.from(new Set(indices));
-    return [0, ...uniqueInOrder];
-  }, [moveLogEntries]);
-  const mainlineMoveTurnIndices = useMemo<number[]>(() => {
-    const indices = moveLogEntries
-      .map((move) => move.result_turn_index)
-      .filter((value) => Number.isFinite(value) && value > 0);
-    const uniqueInOrder = Array.from(new Set(indices));
-    return [0, ...uniqueInOrder];
-  }, [moveLogEntries]);
-  const isLoadedMainlineExtensionState = useMemo<boolean>(() => {
-    return Boolean(
-      snapshot &&
-      loadedHistoricalMainlineLengthRef.current > 0 &&
-      snapshot.current_snapshot_index == null &&
-      currentSnapshotIndex > loadedHistoricalMainlineTailSnapshotRef.current
-    );
-  }, [snapshot, currentSnapshotIndex]);
-  const useTurnNavigationForVisibleMainline = Boolean(snapshot?.current_snapshot_index == null && !isLoadedMainlineExtensionState);
-  const visibleMainlineTargets = useMemo<number[]>(() => {
-    return useTurnNavigationForVisibleMainline ? mainlineMoveTurnIndices : mainlineMoveSnapshotIndices;
-  }, [useTurnNavigationForVisibleMainline, mainlineMoveTurnIndices, mainlineMoveSnapshotIndices]);
-  const visibleMainlinePosition = useMemo<number>(() => {
-    if (!snapshot) {
-      return 0;
-    }
-    return useTurnNavigationForVisibleMainline ? snapshot.turn_index : currentSnapshotIndex;
-  }, [snapshot, useTurnNavigationForVisibleMainline, currentSnapshotIndex]);
-  const canStepVisibleMainlineBackward = useMemo<boolean>(() => {
-    return visibleMainlineTargets.some((target) => target < visibleMainlinePosition);
-  }, [visibleMainlineTargets, visibleMainlinePosition]);
-  const canStepVisibleMainlineForward = useMemo<boolean>(() => {
-    return visibleMainlineTargets.some((target) => target > visibleMainlinePosition);
-  }, [visibleMainlineTargets, visibleMainlinePosition]);
-  const highlightedMove = useMemo<HighlightedMove | null>(() => {
-    if (moveLogDisplayEntries.length === 0 || currentSnapshotIndex <= 0) {
-      return null;
-    }
-    let best: MoveLogDisplayEntry | null = null;
-    for (const move of moveLogDisplayEntries) {
-      if (move.result_snapshot_index > currentSnapshotIndex) {
-        continue;
-      }
-      if (
-        !best
-        || move.result_snapshot_index > best.result_snapshot_index
-      ) {
-        best = move;
-      }
-    }
-    if (best) {
-      return {
-        actor: best.actor,
-        resultTurnIndex: best.result_turn_index,
-        resultSnapshotIndex: best.result_snapshot_index,
-      };
-    }
-    return null;
-  }, [moveLogDisplayEntries, currentSnapshotIndex]);
-  const highlightedVariation = useMemo<HighlightedVariation | null>(() => {
-    if (!activeVariationSelection) {
-      return null;
-    }
-    const branch = variationBranches.find((item) => item.id === activeVariationSelection.branchId) ?? null;
-    if (!branch || activeVariationSelection.moveIndex < 0 || activeVariationSelection.moveIndex >= branch.moves.length) {
-      return null;
-    }
-    return activeVariationSelection;
-  }, [activeVariationSelection, variationBranches]);
   function isHighlightedMainlineMove(move: MoveLogDisplayEntry | null | undefined): boolean {
     if (!move || highlightedVariation != null || highlightedMove == null) {
       return false;
@@ -529,30 +223,6 @@ export function App() {
       && move.result_turn_index === highlightedMove.resultTurnIndex
     );
   }
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const cards = await fetchJSON<CatalogCardDTO[]>('/api/cards');
-        const nobles = await fetchJSON<CatalogNobleDTO[]>('/api/nobles');
-        setCatalogCards(cards);
-        setCatalogNobles(nobles);
-      } catch (err) {
-        setError((err as Error).message);
-      }
-    })();
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (pollRef.current !== null) {
-        window.clearInterval(pollRef.current);
-      }
-      if (evalAnimationFrameRef.current !== null) {
-        window.cancelAnimationFrame(evalAnimationFrameRef.current);
-      }
-    };
-  }, []);
 
   useEffect(() => {
     if (!snapshot?.pending_reveals.length) {
@@ -590,14 +260,6 @@ export function App() {
       return revealKey(firstBlocking.zone, firstBlocking.tier, firstBlocking.slot, firstBlocking.actor ?? undefined);
     });
   }, [snapshot]);
-
-  function clearPolling(): void {
-    if (pollRef.current !== null) {
-      window.clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-    activeJobIdRef.current = null;
-  }
 
   function deriveUiStatus(nextSnapshot: GameSnapshotDTO): UiStatus {
     if (nextSnapshot.status !== 'IN_PROGRESS') {
@@ -778,55 +440,6 @@ export function App() {
     return `Set card${tierLabel}`;
   }
 
-  function cardOptionLabel(card: CatalogCardDTO): string {
-    const cost = Object.entries(card.cost)
-      .filter(([, count]) => count > 0)
-      .map(([color, count]) => `${count}${color[0].toUpperCase()}`)
-      .join(' ');
-    return `#${card.id} ${card.bonus_color} ${card.points}pt${cost ? ` | ${cost}` : ''}`;
-  }
-
-  function nobleOptionLabel(noble: CatalogNobleDTO): string {
-    const reqs = Object.entries(noble.requirements)
-      .filter(([, count]) => count > 0)
-      .map(([color, count]) => `${count}${color[0].toUpperCase()}`)
-      .join(' ');
-    return `#${noble.id} ${noble.points}pt${reqs ? ` | ${reqs}` : ''}`;
-  }
-
-  function findCatalogCard(card: BoardStateDTO['tiers'][number]['cards'][number]): CatalogCardDTO | null {
-    const matches = catalogCards.filter((candidate) =>
-      (card.tier == null || candidate.tier === card.tier) &&
-      candidate.points === card.points &&
-      candidate.bonus_color === card.bonus_color &&
-      candidate.cost.white === card.cost.white &&
-      candidate.cost.blue === card.cost.blue &&
-      candidate.cost.green === card.cost.green &&
-      candidate.cost.red === card.cost.red &&
-      candidate.cost.black === card.cost.black
-    );
-    if (matches.length === 0) {
-      return null;
-    }
-    return matches[0];
-  }
-
-  function findCatalogCardId(card: BoardStateDTO['tiers'][number]['cards'][number]): number | null {
-    return findCatalogCard(card)?.id ?? null;
-  }
-
-  function findCatalogNobleId(noble: BoardStateDTO['nobles'][number]): number | null {
-    const match = catalogNobles.find((candidate) =>
-      candidate.points === noble.points &&
-      candidate.requirements.white === noble.requirements.white &&
-      candidate.requirements.blue === noble.requirements.blue &&
-      candidate.requirements.green === noble.requirements.green &&
-      candidate.requirements.red === noble.requirements.red &&
-      candidate.requirements.black === noble.requirements.black
-    );
-    return match?.id ?? null;
-  }
-
   function buildEngineThinkRequest(options?: {
     searchTypeOverride?: SearchType;
     snapshotOverride?: GameSnapshotDTO | null;
@@ -893,64 +506,14 @@ export function App() {
     };
   }
 
-  async function startEngineThink(options?: {
-    searchTypeOverride?: SearchType;
-    snapshotOverride?: GameSnapshotDTO | null;
-  }): Promise<void> {
-    setError(null);
-    const think = await fetchJSON<EngineThinkResponse>('/api/game/engine-think', {
-      method: 'POST',
-      body: JSON.stringify(buildEngineThinkRequest(options)),
-    });
-    setUiStatus('WAITING_ENGINE');
-    clearPolling();
-    activeJobIdRef.current = think.job_id;
-
-    pollRef.current = window.setInterval(() => {
-      void pollEngineJob(think.job_id);
-    }, POLL_MS);
-  }
-
-  async function pollEngineJob(nextJobId: string): Promise<void> {
-    try {
-      const status = await fetchJSON<EngineJobStatusDTO>(`/api/game/engine-job/${nextJobId}`);
-      if (activeJobIdRef.current !== nextJobId) {
-        return;
-      }
-      setJobStatus(status);
-      if (status.status === 'DONE') {
-        clearPolling();
-        const currentSnapshot = snapshotRef.current;
-        const shouldApplyEngineMove = Boolean(
-          currentSnapshot
-          && currentSnapshot.status === 'IN_PROGRESS'
-          && !currentSnapshot.config?.analysis_mode
-          && currentSnapshot.player_to_move !== currentSnapshot.config?.player_seat,
-        );
-        if (shouldApplyEngineMove) {
-          const nextSnapshot = await fetchJSON<GameSnapshotDTO>('/api/game/engine-apply', {
-            method: 'POST',
-            body: JSON.stringify({ job_id: nextJobId }),
-          });
-          const engineStillOwnsTurn = Boolean(
-            nextSnapshot.status === 'IN_PROGRESS'
-            && !nextSnapshot.config?.analysis_mode
-            && nextSnapshot.player_to_move !== nextSnapshot.config?.player_seat,
-          );
-          await handleSnapshotUpdate(nextSnapshot, engineStillOwnsTurn);
-        } else {
-          setUiStatus(currentSnapshot?.status === 'IN_PROGRESS' ? 'WAITING_PLAYER' : 'GAME_OVER');
-        }
-      } else if (status.status === 'FAILED' || status.status === 'CANCELLED') {
-        clearPolling();
-        setUiStatus('WAITING_PLAYER');
-      }
-    } catch (err) {
-      clearPolling();
-      setError((err as Error).message);
-      setUiStatus('WAITING_PLAYER');
-    }
-  }
+  const { clearPolling, startEngineThink } = useEnginePolling({
+    buildEngineThinkRequest,
+    handleSnapshotUpdate,
+    snapshotRef,
+    setError,
+    setJobStatus,
+    setUiStatus,
+  });
 
   async function startGame(manualRevealMode: boolean, playerSeatOverride?: Seat, analysisModeOverride?: boolean): Promise<void> {
     setError(null);
@@ -2340,47 +1903,7 @@ export function App() {
   const p0EvalValue = useMemo<number | null>(() => {
     return p0WinningEval(analysisEvalValue, snapshot?.player_to_move ?? null);
   }, [analysisEvalValue, snapshot]);
-  useEffect(() => {
-    displayedP0EvalRef.current = displayedP0EvalValue;
-  }, [displayedP0EvalValue]);
-
-  useEffect(() => {
-    if (p0EvalValue == null || !Number.isFinite(p0EvalValue)) {
-      return;
-    }
-    if (evalAnimationFrameRef.current !== null) {
-      window.cancelAnimationFrame(evalAnimationFrameRef.current);
-      evalAnimationFrameRef.current = null;
-    }
-    setDisplayedP0EvalValue((current) => {
-      if (current == null || !Number.isFinite(current)) {
-        return p0EvalValue;
-      }
-      return current;
-    });
-    const startValue = displayedP0EvalRef.current != null && Number.isFinite(displayedP0EvalRef.current)
-      ? displayedP0EvalRef.current
-      : p0EvalValue;
-    if (Math.abs(startValue - p0EvalValue) < 0.0001) {
-      setDisplayedP0EvalValue(p0EvalValue);
-      return;
-    }
-    const startedAt = performance.now();
-    const durationMs = 525;
-    const step = (now: number) => {
-      const progress = Math.min(1, (now - startedAt) / durationMs);
-      const eased = 1 - Math.pow(1 - progress, 3);
-      const nextValue = startValue + (p0EvalValue - startValue) * eased;
-      displayedP0EvalRef.current = nextValue;
-      setDisplayedP0EvalValue(nextValue);
-      if (progress < 1) {
-        evalAnimationFrameRef.current = window.requestAnimationFrame(step);
-      } else {
-        evalAnimationFrameRef.current = null;
-      }
-    };
-    evalAnimationFrameRef.current = window.requestAnimationFrame(step);
-  }, [p0EvalValue]);
+  const displayedP0EvalValue = useAnimatedEval(p0EvalValue);
   const evalBarTopHeight = useMemo<number>(() => {
     if (displayedP0EvalValue == null || !Number.isFinite(displayedP0EvalValue)) {
       return 50;
@@ -2572,21 +2095,6 @@ export function App() {
     }
     return displayBoard.nobles ?? [];
   }, [activeReveal, displayBoard]);
-  const groupedCatalogNobles = useMemo(() => {
-    const groups = {
-      three: [] as CatalogNobleDTO[],
-      four: [] as CatalogNobleDTO[],
-    };
-    for (const noble of catalogNobles) {
-      const reqs = COLOR_ORDER.map((color) => noble.requirements[color]).filter((count) => count > 0);
-      if (reqs.length === 3 && reqs.every((count) => count === 3)) {
-        groups.three.push(noble);
-      } else if (reqs.length === 2 && reqs.every((count) => count === 4)) {
-        groups.four.push(noble);
-      }
-    }
-    return groups;
-  }, [catalogNobles]);
   const setupUnavailableCardIds = useMemo(() => {
     if (!activeReveal || activeReveal.zone !== 'faceup_card' || !isSetupLikeView || activeReveal.reason !== 'initial_setup' || !displayBoard) {
       return new Set<number>();
@@ -2903,102 +2411,31 @@ export function App() {
   return (
     <main className={`app-shell ${isBoardView ? 'app-shell-board' : ''} ${hideAllExceptBoard ? 'board-only-mode' : ''}`}>
       {!hideAllExceptBoard && (
-      <header className="top-nav">
-        <button type="button" className="brand-link" onClick={() => setHomeView('HOME')} aria-label="AhinLendor home">
-          <img src="/ahin.svg" alt="" className="brand-mark" />
-          <span className="brand-wordmark">AhinLendor</span>
-        </button>
-        <nav className="nav-links" aria-label="Primary navigation">
-          <button
-            type="button"
-            className={`nav-link ${homeView === 'HOME' ? 'nav-link-active' : ''}`}
-            onClick={() => setHomeView('HOME')}
-          >
-            <UiIcon name="home" />
-            <span>Home</span>
-          </button>
-          <button
-            type="button"
-            className={`nav-link ${homeView === 'QUICK' ? 'nav-link-active' : ''}`}
-            onClick={onOpenQuickView}
-          >
-            <UiIcon name="play" />
-            <span>Quick Game</span>
-          </button>
-          <button
-            type="button"
-            className={`nav-link ${homeView === 'ANALYSIS' ? 'nav-link-active' : ''}`}
-            onClick={onOpenManualView}
-          >
-            <UiIcon name="analysis" />
-            <span>Analysis</span>
-          </button>
-          <button
-            type="button"
-            className={`nav-link ${homeView === 'ABOUT' ? 'nav-link-active' : ''}`}
-            onClick={onOpenAboutView}
-          >
-            <UiIcon name="about" />
-            <span>About</span>
-          </button>
-        </nav>
-        <div className="header-actions auth-nav">
-          {homeView !== 'HOME' && (
-            <>
-              {homeView === 'ANALYSIS' && snapshot && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void onRunDeepAnalysis()}
-                    disabled={isDeepAnalysisRunning || moveLogEntries.length === 0 || !canRunDeepAnalysisForCurrentSearch}
-                    title={
-                      searchType === 'alphabeta'
-                        ? `Run deep analysis across all logged moves (depth ${alphabetaDepth})`
-                        : searchType === 'forced_child'
-                          ? `Run deep analysis across all logged moves (${deepAnalysisSimulations.toLocaleString()} per-action sims)`
-                          : searchType === 'mcts_bootstrap'
-                            ? `Run deep analysis across all logged moves (${deepAnalysisSimulations.toLocaleString()} total sims, bootstrap ${deepAnalysisBootstrapSimulationsPerAction.toLocaleString()} per action)`
-                          : `Run deep analysis across all logged moves (${deepAnalysisSimulations.toLocaleString()} sims per move)`
-                    }
-                  >
-                    {isDeepAnalysisRunning ? 'Running Deep Analysis...' : 'Run Deep Analysis'}
-                  </button>
-                  {deepAnalysisProgress && (
-                    <span className="header-inline-status">
-                      {deepAnalysisProgress.done} / {deepAnalysisProgress.total}
-                    </span>
-                  )}
-                </>
-              )}
-            </>
-          )}
-        </div>
-      </header>
+        <TopNav
+          alphabetaDepth={alphabetaDepth}
+          deepAnalysisBootstrapSimulationsPerAction={deepAnalysisBootstrapSimulationsPerAction}
+          deepAnalysisProgress={deepAnalysisProgress}
+          deepAnalysisSimulations={deepAnalysisSimulations}
+          homeView={homeView}
+          isDeepAnalysisRunning={isDeepAnalysisRunning}
+          canRunDeepAnalysis={canRunDeepAnalysisForCurrentSearch}
+          moveCount={moveLogEntries.length}
+          onOpenAbout={onOpenAboutView}
+          onOpenAnalysis={onOpenManualView}
+          onOpenHome={() => setHomeView('HOME')}
+          onOpenQuick={onOpenQuickView}
+          onRunDeepAnalysis={() => void onRunDeepAnalysis()}
+          searchType={searchType}
+          snapshotPresent={Boolean(snapshot)}
+        />
       )}
 
       {homeView === 'HOME' && (
-        <section className="home-landing">
-          <div className="home-hero">
-            <h2>AhinLendor</h2>
-          </div>
-          <div className="home-mode-grid">
-            <button type="button" className="home-mode-card" onClick={onOpenQuickView}>
-              <UiIcon name="play" />
-              <strong>Quick Game</strong>
-              <span>Engine vs human from a random opening.</span>
-            </button>
-            <button type="button" className="home-mode-card" onClick={onOpenManualView}>
-              <UiIcon name="analysis" />
-              <strong>Analysis</strong>
-              <span>Manual setup with continuous analysis.</span>
-            </button>
-            <button type="button" className="home-mode-card" onClick={onOpenAboutView}>
-              <UiIcon name="about" />
-              <strong>About</strong>
-              <span>Development notes, engine features, and project background.</span>
-            </button>
-          </div>
-        </section>
+        <HomePage
+          onOpenAbout={onOpenAboutView}
+          onOpenAnalysis={onOpenManualView}
+          onOpenQuick={onOpenQuickView}
+        />
       )}
 
       {(homeView === 'QUICK' || isSetupLikeView) && !snapshot && (
@@ -3008,102 +2445,7 @@ export function App() {
         </section>
       )}
 
-      {homeView === 'ABOUT' && (
-        <section className="panel about-panel">
-          <h2>About AhinLendor</h2>
-          <div className="about-content">
-            <section>
-              <h3>What is AhinLendor?</h3>
-              <p>
-                AhinLendor is an AI for the board game <strong>Splendor</strong>, built using a complete 
-                {" "}<strong>AlphaZero-style</strong> architecture. It learns entirely through self-play,
-                combining a policy-value neural network with Monte Carlo Tree Search (MCTS)
-                to discover strategies without any human game data.
-              </p>
-              <p>
-                In live competition, AhinLendor reached <strong>Rank 1</strong> on the {" "}
-                <a href="https://spendee.mattle.online/" target="_blank" rel="noreferrer">spendee.mattle.online</a>
-                {" "} leaderboard. It has also won exhibition matches against two of the <strong>top-ranked human players</strong> on 
-                {" "} <a href="https://boardgamearena.com/" target="_blank" rel="noreferrer">BoardGameArena</a>: 
-                {" "}<strong>seed seed (zuroti)</strong> and <strong>FourDimensional</strong>.
-              </p>
-              <img src="/leaderboard-rank1.png" alt="AhinLendor leaderboard rank 1" className="about-image" />
-            </section>
-            <section>
-              <h3>Specifications</h3>
-              <p>
-                When AhinLendor reached <strong>Rank 1</strong> on Spendee, it competed under a {" "}
-                <strong>5 minutes + 10 seconds per action</strong> time control. For each move, the engine performed {" "}
-                <strong>70,000 MCTS simulations</strong>.
-              </p>
-              <p>
-                Later versions improved the search with <strong>250,000 MCTS simlulations</strong>, {" "}
-                <strong>20,000 bootstrap iterations</strong>, and batching <strong>64 leaf evaluations</strong> at a time.
-                On a MacBook M2, this version took about <strong>20 seconds per move</strong>.
-              </p>
-            </section>
-            <section>
-              <h3>Reducing the Action Space</h3>
-              <p>
-                One of the first design challenges was defining the <strong>action space</strong>—the set of actions the
-                AI can choose from at each move. In Splendor, token collection and returns create many valid
-                combinations, and treating every card as a separate buy or reserve action quickly inflates the policy
-                space. For example, Jonatan Simonsson's master's thesis, <em>Creating an AI Opponent with Super-Human
-                Performance for Splendor</em>, uses <strong>371 possible actions</strong>.
-              </p>
-              <p>
-                AhinLendor greatly reduces this action space through several design choices. When
-                returning tokens, the AI chooses <strong>one token at a time</strong> in a separate return phase instead
-                of selecting an entire return combination at once, dramatically reducing the number of actions. Buy and
-                reserve actions are also limited to the cards currently available on the board (<strong>12 buy actions</strong> {" "}
-                and <strong>15 reserve actions</strong>). Together, these design choices reduce the policy space to
-                {" "} <strong>69 actions</strong> while preserving the full game rules.
-              </p>
-            </section>
-            <section>
-              <h3>Bootstrap Search</h3>
-              <p>
-                A weakness emerged while analyzing games against <strong>seed seed</strong>, the former Rank 1 player on
-                BoardGameArena. <strong>seed seed</strong> favored <strong>long-term</strong> engine-building plans, while
-                AhinLendor often preferred moves that looked immediately stronger. In one game, the human correctly
-                identified that buying an unassuming <strong>Tier 1</strong> card early would determine the outcome many
-                turns later, but the AI largely ignored it.
-              </p>
-              <p>
-                The problem came from the value network. Because <strong>MCTS</strong> naturally focuses on moves that
-                already appear promising, actions that are initially underestimated receive very little exploration.
-                <strong>Bootstrap MCTS</strong> addresses this by performing a fixed number of simulations from every
-                legal move one ply ahead before normal tree search begins. This gives each candidate meaningful
-                exploration before standard MCTS allocates simulations according to its search policy.
-              </p>
-            </section>
-            <section>
-              <h3>Developer Notes</h3>
-              <p>
-                Reaching <strong>Rank 1</strong> on Spendee initially suggested that AhinLendor had reached a 
-                <strong>superhuman</strong> level of play. That assumption changed after playing against seed seed, who
-                narrowly won their first match <strong>4-3</strong> despite the engine's top ranking. Later versions won
-                the rematch <strong>6-0</strong>, but those games showed that achieving the highest online rating does
-                not mean every strategic weakness has been solved.
-              </p>
-              <p>
-                Splendor's <strong>stochastic card reveals</strong> make evaluation harder than in 
-                <strong>perfect-information</strong> games. Even the objectively best move can become worse if an
-                unfavorable card appears afterward, so the <strong>value function</strong> can never be perfectly
-                accurate. Deeper search can compensate, but <strong>neural-network inference</strong> remains the
-                computational bottleneck. An <strong>NNUE-style evaluator</strong> could enable much deeper search and may
-                reduce some remaining weaknesses.
-              </p>
-              <p>
-                Another open problem is reasoning about an opponent's <strong>hidden reserved card</strong>. The current
-                engine samples a random unseen card during each <strong>MCTS simulation</strong>, which is unbiased but does
-                not model clues from the opponent's gem collection or long-term plan. An explicit <strong>belief model</strong>
-                over hidden cards remains a future research direction.
-              </p>
-            </section>
-          </div>
-        </section>
-      )}
+      {homeView === 'ABOUT' && <AboutPage />}
 
       {isBoardView && (
         <section className={`panel game-layout ${hideAllExceptBoard ? 'board-only-mode' : ''}`}>
