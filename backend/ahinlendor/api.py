@@ -5,6 +5,7 @@ import random
 import threading
 import uuid
 import copy
+import logging
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -89,6 +90,7 @@ _STANDARD_NOBLE_ID_BY_SIGNATURE = {
 }
 _REPLAY_MODEL_CACHE: dict[str, Any] = {}
 _REPLAY_MODEL_CACHE_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 class CheckpointDTO(BaseModel):
@@ -1023,7 +1025,7 @@ def _infer_actions_between_snapshots(
             if legal_sequence:
                 return hist_delta
         except Exception:
-            pass
+            logger.exception("Failed to replay bridge action-history delta during snapshot inference")
 
     forced_deck_reserve = _forced_deck_reserve_action(start_state, end_state)
     if forced_deck_reserve is not None:
@@ -1042,7 +1044,7 @@ def _infer_actions_between_snapshots(
                 if _observable_state_for_inference(probe_forced.export_state()) == target_obs:
                     return [int(forced_deck_reserve)]
         except Exception:
-            pass
+            logger.exception("Failed to replay forced deck-reserve candidate during snapshot inference")
 
     probe = env.clone()
     probe.load_state(start_state)
@@ -2091,7 +2093,10 @@ class GameManager:
         return env, self._config, self._game_id
 
     def _resolve_checkpoint(self, checkpoint_id: str) -> Path:
-        return Path(_default_checkpoint().path)
+        for item in _scan_checkpoints():
+            if item.id == checkpoint_id or item.name == checkpoint_id or item.path == checkpoint_id:
+                return Path(item.path)
+        raise HTTPException(status_code=400, detail=f"Unknown checkpoint: {checkpoint_id}")
 
     def _resolve_saved_checkpoint(self, config: GameConfigDTO) -> Path:
         try:
@@ -2624,6 +2629,7 @@ class GameManager:
             try:
                 env.set_reserved_card(player_idx, event.slot, event.card_id)
             except Exception:
+                logger.exception("Native reserved-card replay failed; trying compatibility fallback")
                 if not _force_reveal_reserved_card_if_current(
                     env,
                     player_idx=player_idx,
@@ -2792,6 +2798,16 @@ class GameManager:
             if continuous_until_cancel and normalized_search_type not in ("mcts", "mcts_gpu", "mcts_bootstrap"):
                 raise HTTPException(status_code=400, detail=f"{normalized_search_type} does not support continuous mode")
 
+            search_device = "cuda" if torch.cuda.is_available() else "cpu"
+            model = self._get_model_locked(config, device=search_device)
+            search_env = env.clone()
+            search_step = search_env.get_state()
+            if forced_root_action_idx is not None:
+                if continuous_until_cancel:
+                    raise HTTPException(status_code=400, detail="Forced-root search does not support continuous mode")
+                if not bool(search_step.mask[forced_root_action_idx]):
+                    raise HTTPException(status_code=400, detail="Forced root action is illegal")
+
             job = EngineJob(
                 job_id=str(uuid.uuid4()),
                 game_id=game_id,
@@ -2802,16 +2818,6 @@ class GameManager:
             )
             self._jobs[job.job_id] = job
             self._active_job_id = job.job_id
-
-            search_device = "cuda" if torch.cuda.is_available() else "cpu"
-            model = self._get_model_locked(config, device=search_device)
-            search_env = env.clone()
-            search_step = search_env.get_state()
-            if forced_root_action_idx is not None:
-                if continuous_until_cancel:
-                    raise HTTPException(status_code=400, detail="Forced-root search does not support continuous mode")
-                if not bool(search_step.mask[forced_root_action_idx]):
-                    raise HTTPException(status_code=400, detail="Forced root action is illegal")
 
             # Use determinization seed for consistent searches
             search_rng = random.Random(self._determinization_seed) if self._determinization_seed is not None else self._rng
@@ -3126,13 +3132,12 @@ class GameManager:
 
                     elapsed = time.time() - start_time
                     if result is not None:
-                        print(
+                        logger.info(
                             f"[{normalized_search_type.upper()}] Time: {elapsed:.3f}s | Budget: {search_budget} | "
                             f"Requested: {result.search_slots_requested} | "
                             f"Evaluated: {result.search_slots_evaluated} | "
                             f"Dropped (pending): {result.search_slots_drop_pending_eval} | "
-                            f"Dropped (no action): {result.search_slots_drop_no_action}",
-                            flush=True,
+                            f"Dropped (no action): {result.search_slots_drop_no_action}"
                         )
                         return _publish_tree_result(
                             result,
@@ -3141,7 +3146,7 @@ class GameManager:
                         )
 
                     q_values = deterministic_q_values
-                    print(f"[{normalized_search_type.upper()}] Time: {elapsed:.3f}s", flush=True)
+                    logger.info("[%s] Time: %.3fs", normalized_search_type.upper(), elapsed)
 
                     search_board = _decode_board_state(
                         search_step,
@@ -3308,6 +3313,7 @@ class GameManager:
             try:
                 env.set_reserved_card(player_idx, req.slot, req.card_id)
             except Exception:
+                logger.exception("Native reserved-card reveal failed; trying compatibility fallback")
                 if not _force_reveal_reserved_card_if_current(
                     env,
                     player_idx=player_idx,
@@ -3529,6 +3535,16 @@ def engine_apply(req: EngineApplyRequest) -> GameSnapshotDTO:
 @app.post("/api/game/resign", response_model=GameSnapshotDTO)
 def game_resign() -> GameSnapshotDTO:
     return manager.resign()
+
+
+@app.get("/api/game/save", response_model=SavedGameDTO)
+def game_save() -> SavedGameDTO:
+    return manager.save_game()
+
+
+@app.post("/api/game/load", response_model=GameSnapshotDTO)
+def game_load(saved: SavedGameDTO) -> GameSnapshotDTO:
+    return manager.load_game(saved)
 
 
 @app.post("/api/game/undo", response_model=GameSnapshotDTO)

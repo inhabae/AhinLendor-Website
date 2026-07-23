@@ -66,3 +66,36 @@ def test_force_set_hidden_reserved_card_swaps_with_hidden_deck_pool() -> None:
     assert reserved["is_public"] is True
     assert selected_card_id not in env.state["deck_card_ids_by_tier"][0]
     assert previous_card_id in env.state["deck_card_ids_by_tier"][0]
+
+
+def test_resolve_checkpoint_uses_requested_checkpoint(monkeypatch) -> None:
+    first = api.CheckpointDTO(
+        id="/tmp/first.pt",
+        name="first.pt",
+        path="/tmp/first.pt",
+        created_at="2026-01-01T00:00:00+00:00",
+        size_bytes=1,
+    )
+    second = api.CheckpointDTO(
+        id="/tmp/second.pt",
+        name="second.pt",
+        path="/tmp/second.pt",
+        created_at="2026-01-02T00:00:00+00:00",
+        size_bytes=1,
+    )
+    monkeypatch.setattr(api, "_scan_checkpoints", lambda: [first, second])
+
+    manager = api.GameManager()
+
+    assert manager._resolve_checkpoint(second.id) == api.Path(second.path)
+    assert manager._resolve_checkpoint("first.pt") == api.Path(first.path)
+
+
+def test_save_load_routes_are_exposed() -> None:
+    route_paths = {
+        getattr(route, "path", None)
+        for route in api.app.routes
+    }
+
+    assert "/api/game/save" in route_paths
+    assert "/api/game/load" in route_paths

@@ -12,6 +12,24 @@ const COLOR_MAP: Record<string, string> = {
 const REQ_ORDER: Array<'white' | 'blue' | 'green' | 'red' | 'black'> = ['white', 'blue', 'green', 'red', 'black'];
 const TOKEN_ORDER: Array<'gold' | 'white' | 'blue' | 'green' | 'red' | 'black'> = ['gold', 'white', 'blue', 'green', 'red', 'black'];
 
+const PLAYER_PANEL = {
+  x: 40,
+  topY: 70,
+  gap: 26,
+  width: 360,
+  reservedY: 404,
+  reservedCardHeight: 132,
+  paddingBottom: 24,
+};
+const PLAYER_PANEL_HEIGHT = PLAYER_PANEL.reservedY + PLAYER_PANEL.reservedCardHeight + PLAYER_PANEL.paddingBottom;
+const BOARD_PANEL = {
+  x: 440,
+  y: 60,
+  width: 1380,
+  height: 920,
+};
+const EXPORT_MARGIN = 40;
+
 function escapeXml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -29,8 +47,11 @@ function buildBoardSvg(displayBoard: BoardStateDTO): { svg: string; width: numbe
   const boardFill = rootStyle.getPropertyValue('--board-surface-bg').trim() || '#2e343d';
   const textLight = rootStyle.color || '#eef2fb';
   const textMuted = '#9aa6bc';
-  const width = 1880;
-  const height = 1140;
+  const width = BOARD_PANEL.x + BOARD_PANEL.width + 60;
+  const height = Math.max(
+    BOARD_PANEL.y + BOARD_PANEL.height,
+    PLAYER_PANEL.topY + PLAYER_PANEL_HEIGHT * 2 + PLAYER_PANEL.gap,
+  ) + EXPORT_MARGIN;
 
   const renderToken = (x: number, y: number, color: keyof TokenCountsDTO, count: number): string => `
     <g transform="translate(${x} ${y})">
@@ -79,7 +100,7 @@ function buildBoardSvg(displayBoard: BoardStateDTO): { svg: string; width: numbe
 
   const renderPlayer = (player: BoardStateDTO['players'][number], x: number, y: number): string => `
     <g transform="translate(${x} ${y})">
-      <rect x="0" y="0" width="360" height="410" rx="18" fill="${panelFill}" stroke="rgba(255,255,255,0.08)" stroke-width="2" />
+      <rect x="0" y="0" width="${PLAYER_PANEL.width}" height="${PLAYER_PANEL_HEIGHT}" rx="18" fill="${panelFill}" stroke="rgba(255,255,255,0.08)" stroke-width="2" />
       <text x="24" y="38" font-size="28" font-weight="800" fill="${textLight}">${escapeXml(player.display_name)}</text>
       <text x="300" y="38" font-size="24" font-weight="800" fill="${textLight}">${player.points}★</text>
       <text x="24" y="76" font-size="18" font-weight="700" fill="${textMuted}">Tokens</text>
@@ -108,10 +129,10 @@ function buildBoardSvg(displayBoard: BoardStateDTO): { svg: string; width: numbe
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
       <rect width="${width}" height="${height}" fill="${pageBackground}" />
-      ${renderPlayer(displayBoard.players[0], 40, 70)}
-      ${renderPlayer(displayBoard.players[1], 40, 560)}
-      <g transform="translate(440 60)">
-        <rect x="0" y="0" width="1380" height="920" rx="26" fill="${boardFill}" />
+      ${renderPlayer(displayBoard.players[0], PLAYER_PANEL.x, PLAYER_PANEL.topY)}
+      ${renderPlayer(displayBoard.players[1], PLAYER_PANEL.x, PLAYER_PANEL.topY + PLAYER_PANEL_HEIGHT + PLAYER_PANEL.gap)}
+      <g transform="translate(${BOARD_PANEL.x} ${BOARD_PANEL.y})">
+        <rect x="0" y="0" width="${BOARD_PANEL.width}" height="${BOARD_PANEL.height}" rx="26" fill="${boardFill}" />
         <g transform="translate(84 44)">
           ${[0, 1, 2].map((slot) => renderNoble(nobleBySlot.get(slot) ?? null, slot * 170, 0)).join('')}
         </g>

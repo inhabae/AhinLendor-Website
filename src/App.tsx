@@ -27,6 +27,21 @@ import { CardView } from './components/board/CardView';
 import { NobleView } from './components/board/NobleView';
 import { BoardViewport } from './components/board/BoardViewport';
 import { downloadBoardImage } from './utils/exportBoardImage';
+import { fetchJSON } from './lib/apiClient';
+import {
+  HomeView,
+  VIEW_PATHS,
+  analysisPublishInterval,
+  continuationSuffix,
+  formatEvalBarValue,
+  formatTopMoveEval,
+  homeViewFromPath,
+  moveAnalysisKey,
+  p0WinningEval,
+  searchTypeLabel,
+  topMoveEvalClass,
+  winnerLabel,
+} from './lib/gameUi';
 import {
   isBuyFaceupAction,
   isBuyReservedAction,
@@ -42,7 +57,6 @@ import {
 } from './lib/actionEncoding';
 
 type UiStatus = 'IDLE' | 'WAITING_ENGINE' | 'WAITING_PLAYER' | 'WAITING_REVEAL' | 'GAME_OVER';
-type HomeView = 'HOME' | 'QUICK' | 'ANALYSIS' | 'ABOUT';
 type AnalysisPanelTab = 'ANALYSIS' | 'MOVES';
 const COLOR_ORDER: CatalogCardDTO['bonus_color'][] = ['white', 'blue', 'green', 'red', 'black'];
 
@@ -54,19 +68,6 @@ const DEFAULT_ALPHABETA_DEPTH = 3;
 const DEFAULT_SEARCH_SIMULATIONS = 200_000;
 const DEFAULT_BOOTSTRAP_SIMULATIONS_PER_ACTION = 20_000;
 const MAX_SEARCH_SIMULATIONS = 1_000_000;
-
-function analysisPublishInterval(totalSimulations: number): number {
-  const normalized = Number.isInteger(totalSimulations) && totalSimulations >= 1 ? totalSimulations : 1;
-  return Math.max(64, Math.min(2000, Math.floor(normalized / 20) || 1));
-}
-
-function winnerLabel(snapshot: GameSnapshotDTO | null): string | null {
-  if (!snapshot || snapshot.winner < 0) {
-    return null;
-  }
-  const winnerSeat: Seat = snapshot.winner === 0 ? 'P0' : 'P1';
-  return snapshot.board_state?.players.find((player) => player.seat === winnerSeat)?.display_name ?? null;
-}
 
 interface MoveLogRow {
   moveNumber: number;
@@ -155,63 +156,6 @@ function UiIcon({ name }: { name: 'home' | 'play' | 'analysis' | 'about' }) {
   return <Icon className="ui-icon" size={17} stroke={1.75} aria-hidden="true" />;
 }
 
-const VIEW_PATHS: Record<HomeView, string> = {
-  HOME: '/',
-  QUICK: '/quick',
-  ANALYSIS: '/analysis',
-  ABOUT: '/about',
-};
-
-function homeViewFromPath(pathname: string): HomeView {
-  if (pathname.startsWith('/quick')) return 'QUICK';
-  if (pathname.startsWith('/analysis')) return 'ANALYSIS';
-  if (pathname.startsWith('/about')) return 'ABOUT';
-  return 'HOME';
-}
-
-function moveAnalysisKey(move: Pick<MoveLogEntryDTO, 'result_snapshot_index' | 'turn_index' | 'actor' | 'action_idx'>): string {
-  return `${move.result_snapshot_index}:${move.turn_index}:${move.actor}:${move.action_idx}`;
-}
-
-function searchTypeLabel(searchType: SearchType): string {
-  if (searchType === 'mcts_gpu') {
-    return 'MCTS (GPU batched)';
-  }
-  if (searchType === 'mcts_bootstrap') {
-    return 'MCTS Bootstrap';
-  }
-  if (searchType === 'ismcts') {
-    return 'ISMCTS';
-  }
-  if (searchType === 'alphabeta') {
-    return 'Alpha-Beta';
-  }
-  if (searchType === 'forced_child') {
-    return 'Forced Search';
-  }
-  return 'MCTS';
-}
-
-async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  });
-  if (!response.ok) {
-    let detail = `${response.status} ${response.statusText}`;
-    try {
-      const body = (await response.json()) as { detail?: string };
-      if (body.detail) {
-        detail = body.detail;
-      }
-    } catch {
-      // Ignore parse errors and keep status text.
-    }
-    throw new Error(detail);
-  }
-  return (await response.json()) as T;
-}
-
 function isBlockingPendingReveal(reveal: GameSnapshotDTO['pending_reveals'][number]): boolean {
   return reveal.zone !== 'reserved_card';
 }
@@ -230,54 +174,6 @@ function parseRevealKey(key: string): { zone: 'faceup_card' | 'reserved_card' | 
     slot: Number(slot),
     seat: zone === 'reserved_card' ? (seat as Seat) : undefined,
   };
-}
-
-function continuationSuffix(index: number): string {
-  if (index <= 0) {
-    return '';
-  }
-  let out = '';
-  let value = index;
-  while (value > 0) {
-    const rem = (value - 1) % 26;
-    out = String.fromCharCode(97 + rem) + out;
-    value = Math.floor((value - 1) / 26);
-  }
-  return out;
-}
-
-function topMoveEvalClass(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value) || value === 0) {
-    return 'neutral';
-  }
-  return value > 0 ? 'white-side' : 'black-side';
-}
-
-function formatTopMoveEval(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) {
-    return '--';
-  }
-  const magnitude = Math.abs(value).toFixed(2);
-  return value > 0 ? `+${magnitude}` : `-${magnitude}`;
-}
-
-function formatEvalBarValue(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) {
-    return '--';
-  }
-  return Math.abs(value).toFixed(2);
-}
-
-function p1WinningEval(value: number | null | undefined, playerToMove: Seat | null | undefined): number | null {
-  if (value == null || !Number.isFinite(value) || playerToMove == null) {
-    return null;
-  }
-  return playerToMove === 'P1' ? value : -value;
-}
-
-function p0WinningEval(value: number | null | undefined, playerToMove: Seat | null | undefined): number | null {
-  const p1Value = p1WinningEval(value, playerToMove);
-  return p1Value == null ? null : -p1Value;
 }
 
 export function App() {
@@ -326,7 +222,7 @@ export function App() {
   const [variationBranches, setVariationBranches] = useState<VariationBranch[]>([]);
   const [jobStatus, setJobStatus] = useState<EngineJobStatusDTO | null>(null);
   const [uiStatus, setUiStatus] = useState<UiStatus>('IDLE');
-const [displayedP0EvalValue, setDisplayedP0EvalValue] = useState<number | null>(null);
+  const [displayedP0EvalValue, setDisplayedP0EvalValue] = useState<number | null>(null);
   const [analysisPanelTab, setAnalysisPanelTab] = useState<AnalysisPanelTab>('ANALYSIS');
   const [deepAnalysisBySnapshot, setDeepAnalysisBySnapshot] = useState<Record<string, DeepAnalysisEntry>>({});
   const [deepAnalysisSearchBySnapshot, setDeepAnalysisSearchBySnapshot] = useState<Record<string, DeepAnalysisSearchResult>>({});
@@ -361,7 +257,7 @@ const [displayedP0EvalValue, setDisplayedP0EvalValue] = useState<number | null>(
   const analysisSettingsRef = useRef<HTMLDivElement | null>(null);
   const moveLogGridRef = useRef<HTMLDivElement | null>(null);
   const evalAnimationFrameRef = useRef<number | null>(null);
-const displayedP0EvalRef = useRef<number | null>(null);
+  const displayedP0EvalRef = useRef<number | null>(null);
   const autoStartViewRef = useRef<HomeView | null>(null);
   const isSetupLikeView = homeView === 'ANALYSIS';
   const isQuickGameView = homeView === 'QUICK';
@@ -1075,13 +971,13 @@ const displayedP0EvalRef = useRef<number | null>(null);
     clearActiveVariationSelection();
     lastAutoAnalyzeKeyRef.current = null;
 
-      const payload = {
-        num_simulations: Number(numSimulations),
-        player_seat: playerSeatOverride ?? playerSeat,
-        manual_reveal_mode: manualRevealMode,
-        analysis_mode: analysisModeOverride ?? true,
-        ...(seed.trim().length > 0 ? { seed: Number(seed) } : {}),
-      };
+    const payload = {
+      num_simulations: Number(numSimulations),
+      player_seat: playerSeatOverride ?? playerSeat,
+      manual_reveal_mode: manualRevealMode,
+      analysis_mode: analysisModeOverride ?? true,
+      ...(seed.trim().length > 0 ? { seed: Number(seed) } : {}),
+    };
 
     const nextSnapshot = await fetchJSON<GameSnapshotDTO>('/api/game/new', {
       method: 'POST',
