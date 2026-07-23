@@ -1,31 +1,20 @@
+import {
+  TAKE2_PAIRS,
+  TAKE3_TRIPLETS,
+  isBuyFaceupAction,
+  isBuyReservedAction,
+  isNobleAction,
+  isPassAction,
+  isReserveDeckAction,
+  isReserveFaceupAction,
+  isReturnAction,
+  isTake1Action,
+  isTake2Action,
+  isTake2SameAction,
+  isTake3Action,
+} from '../lib/actionEncoding';
 import type { ReactElement } from 'react';
 import { ActionDisplayDTO, BoardStateDTO, CardDTO, NobleDTO } from '../types';
-
-const TAKE3_TRIPLETS = [
-  [0, 1, 2],
-  [0, 1, 3],
-  [0, 1, 4],
-  [0, 2, 3],
-  [0, 2, 4],
-  [0, 3, 4],
-  [1, 2, 3],
-  [1, 2, 4],
-  [1, 3, 4],
-  [2, 3, 4],
-] as const;
-
-const TAKE2_PAIRS = [
-  [0, 1],
-  [0, 2],
-  [0, 3],
-  [0, 4],
-  [1, 2],
-  [1, 3],
-  [1, 4],
-  [2, 3],
-  [2, 4],
-  [3, 4],
-] as const;
 
 const COLOR_ORDER = ['white', 'blue', 'green', 'red', 'black'] as const;
 
@@ -175,32 +164,32 @@ export function ActionLabel({
     } else if (display.kind === 'noble') {
       content = <NobleActionLabel noble={display.noble ?? nobleBySlot(board, display.noble_slot ?? -1)} slot={display.noble_slot} />;
     }
-  } else if (0 <= actionIdx && actionIdx <= 11) {
+  } else if (isBuyFaceupAction(actionIdx)) {
     const tier = Math.floor(actionIdx / 4) + 1;
     const slot = actionIdx % 4;
     content = <CardActionLabel verb="BUY" card={faceupCard(board, tier, slot)} hideVerb={hideVerb} />;
-  } else if (12 <= actionIdx && actionIdx <= 14) {
+  } else if (isBuyReservedAction(actionIdx)) {
     content = <CardActionLabel verb="BUY" card={reservedCard(board, actionIdx - 12)} hideVerb={hideVerb} />;
-  } else if (15 <= actionIdx && actionIdx <= 26) {
+  } else if (isReserveFaceupAction(actionIdx)) {
     const rel = actionIdx - 15;
     const tier = Math.floor(rel / 4) + 1;
     const slot = rel % 4;
     content = <CardActionLabel verb="RESERVE" card={faceupCard(board, tier, slot)} hideVerb={hideVerb} />;
-  } else if (27 <= actionIdx && actionIdx <= 29) {
+  } else if (isReserveDeckAction(actionIdx)) {
     content = <DeckReserveLabel tier={(actionIdx - 26) as 1 | 2 | 3} hideVerb={hideVerb} />;
-  } else if (30 <= actionIdx && actionIdx <= 39) {
+  } else if (isTake3Action(actionIdx)) {
     content = <TakeLabel verb="TAKE" colors={TAKE3_TRIPLETS[actionIdx - 30]} hideVerb={hideVerb} />;
-  } else if (40 <= actionIdx && actionIdx <= 44) {
+  } else if (isTake2SameAction(actionIdx)) {
     content = <TakeLabel verb="TAKE" colors={[actionIdx - 40]} duplicate={2} hideVerb={hideVerb} />;
-  } else if (45 <= actionIdx && actionIdx <= 54) {
+  } else if (isTake2Action(actionIdx)) {
     content = <TakeLabel verb="TAKE" colors={TAKE2_PAIRS[actionIdx - 45]} hideVerb={hideVerb} />;
-  } else if (55 <= actionIdx && actionIdx <= 59) {
+  } else if (isTake1Action(actionIdx)) {
     content = <TakeLabel verb="TAKE" colors={[actionIdx - 55]} hideVerb={hideVerb} />;
-  } else if (actionIdx === 60) {
+  } else if (isPassAction(actionIdx)) {
     content = <span className="action-verb">PASS</span>;
-  } else if (61 <= actionIdx && actionIdx <= 65) {
+  } else if (isReturnAction(actionIdx)) {
     content = <TakeLabel verb="RETURN" colors={[actionIdx - 61]} hideVerb={hideVerb} />;
-  } else if (66 <= actionIdx && actionIdx <= 68) {
+  } else if (isNobleAction(actionIdx)) {
     content = <NobleActionLabel noble={nobleBySlot(board, actionIdx - 66)} slot={actionIdx - 66} />;
   }
 

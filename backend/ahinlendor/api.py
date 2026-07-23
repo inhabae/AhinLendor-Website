@@ -48,6 +48,22 @@ from nn.state_schema import (
     PLAYER_INDEX_IDX,
     STATE_DIM,
 )
+from .action_encoding import (
+    TAKE2_PAIRS,
+    TAKE3_TRIPLETS,
+    is_buy_faceup_action,
+    is_buy_reserved_action,
+    is_continuation_action,
+    is_noble_action,
+    is_pass_action,
+    is_reserve_deck_action,
+    is_reserve_faceup_action,
+    is_return_action,
+    is_take1_action,
+    is_take2_action,
+    is_take2_same_action,
+    is_take3_action,
+)
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = Path(os.environ.get("AHINLENDOR_ENGINE_ROOT", str(APP_ROOT))).expanduser().resolve()
@@ -63,30 +79,6 @@ _STANDARD_CARD_BY_ID = {
     for card in list_standard_cards()
 }
 
-_TAKE3_TRIPLETS = (
-    (0, 1, 2),
-    (0, 1, 3),
-    (0, 1, 4),
-    (0, 2, 3),
-    (0, 2, 4),
-    (0, 3, 4),
-    (1, 2, 3),
-    (1, 2, 4),
-    (1, 3, 4),
-    (2, 3, 4),
-)
-_TAKE2_PAIRS = (
-    (0, 1),
-    (0, 2),
-    (0, 3),
-    (0, 4),
-    (1, 2),
-    (1, 3),
-    (1, 4),
-    (2, 3),
-    (2, 4),
-    (3, 4),
-)
 _COLOR_NAMES = ("white", "blue", "green", "red", "black")
 _STANDARD_NOBLE_ID_BY_SIGNATURE = {
     (
@@ -470,32 +462,32 @@ def _is_blocking_pending_reveal(item: "PendingReveal") -> bool:
 
 
 def _describe_action(action_idx: int) -> str:
-    if 0 <= action_idx <= 11:
+    if is_buy_faceup_action(action_idx):
         return f"BUY face-up tier {action_idx // 4 + 1} slot {action_idx % 4}"
-    if 12 <= action_idx <= 14:
+    if is_buy_reserved_action(action_idx):
         return f"BUY reserved slot {action_idx - 12}"
-    if 15 <= action_idx <= 26:
+    if is_reserve_faceup_action(action_idx):
         rel = action_idx - 15
         return f"RESERVE face-up tier {rel // 4 + 1} slot {rel % 4}"
-    if 27 <= action_idx <= 29:
+    if is_reserve_deck_action(action_idx):
         return f"RESERVE from deck tier {action_idx - 27 + 1}"
-    if 30 <= action_idx <= 39:
-        tri = _TAKE3_TRIPLETS[action_idx - 30]
+    if is_take3_action(action_idx):
+        tri = TAKE3_TRIPLETS[action_idx - 30]
         names = ", ".join(_COLOR_NAMES[i] for i in tri)
         return f"TAKE 3 gems ({names})"
-    if 40 <= action_idx <= 44:
+    if is_take2_same_action(action_idx):
         return f"TAKE 2 gems ({_COLOR_NAMES[action_idx - 40]})"
-    if 45 <= action_idx <= 54:
-        pair = _TAKE2_PAIRS[action_idx - 45]
+    if is_take2_action(action_idx):
+        pair = TAKE2_PAIRS[action_idx - 45]
         names = ", ".join(_COLOR_NAMES[i] for i in pair)
         return f"TAKE 2 gems ({names})"
-    if 55 <= action_idx <= 59:
+    if is_take1_action(action_idx):
         return f"TAKE 1 gem ({_COLOR_NAMES[action_idx - 55]})"
-    if action_idx == 60:
+    if is_pass_action(action_idx):
         return "PASS"
-    if 61 <= action_idx <= 65:
+    if is_return_action(action_idx):
         return f"RETURN gem ({_COLOR_NAMES[action_idx - 61]})"
-    if 66 <= action_idx <= 68:
+    if is_noble_action(action_idx):
         return f"CHOOSE noble index {action_idx - 66}"
     return f"UNKNOWN action {action_idx}"
 
@@ -538,39 +530,39 @@ def _compact_noble_slot(board: BoardStateDTO | None, compact_idx: int) -> int:
 
 def _build_action_display(action_idx: int, board: BoardStateDTO | None, actor: str | None = None) -> ActionDisplayDTO | None:
     action_idx = int(action_idx)
-    if 0 <= action_idx <= 11:
+    if is_buy_faceup_action(action_idx):
         tier = action_idx // 4 + 1
         slot = action_idx % 4
         return ActionDisplayDTO(kind="card", verb="BUY", card=_find_faceup_card(board, tier, slot))
-    if 12 <= action_idx <= 14:
+    if is_buy_reserved_action(action_idx):
         return ActionDisplayDTO(kind="card", verb="BUY", card=_find_reserved_card(board, actor or "P0", action_idx - 12))
-    if 15 <= action_idx <= 26:
+    if is_reserve_faceup_action(action_idx):
         rel = action_idx - 15
         tier = rel // 4 + 1
         slot = rel % 4
         return ActionDisplayDTO(kind="card", verb="RESERVE", card=_find_faceup_card(board, tier, slot))
-    if 27 <= action_idx <= 29:
+    if is_reserve_deck_action(action_idx):
         return ActionDisplayDTO(kind="deck", verb="RESERVE", tier=action_idx - 26)
-    if 30 <= action_idx <= 39:
-        return ActionDisplayDTO(kind="tokens", verb="TAKE", token_colors=[_COLOR_NAMES[i] for i in _TAKE3_TRIPLETS[action_idx - 30]])
-    if 40 <= action_idx <= 44:
+    if is_take3_action(action_idx):
+        return ActionDisplayDTO(kind="tokens", verb="TAKE", token_colors=[_COLOR_NAMES[i] for i in TAKE3_TRIPLETS[action_idx - 30]])
+    if is_take2_same_action(action_idx):
         return ActionDisplayDTO(kind="tokens", verb="TAKE", token_colors=[_COLOR_NAMES[action_idx - 40]], token_duplicate=2)
-    if 45 <= action_idx <= 54:
-        return ActionDisplayDTO(kind="tokens", verb="TAKE", token_colors=[_COLOR_NAMES[i] for i in _TAKE2_PAIRS[action_idx - 45]])
-    if 55 <= action_idx <= 59:
+    if is_take2_action(action_idx):
+        return ActionDisplayDTO(kind="tokens", verb="TAKE", token_colors=[_COLOR_NAMES[i] for i in TAKE2_PAIRS[action_idx - 45]])
+    if is_take1_action(action_idx):
         return ActionDisplayDTO(kind="tokens", verb="TAKE", token_colors=[_COLOR_NAMES[action_idx - 55]])
-    if action_idx == 60:
+    if is_pass_action(action_idx):
         return ActionDisplayDTO(kind="pass", verb="PASS")
-    if 61 <= action_idx <= 65:
+    if is_return_action(action_idx):
         return ActionDisplayDTO(kind="tokens", verb="RETURN", token_colors=[_COLOR_NAMES[action_idx - 61]])
-    if 66 <= action_idx <= 68:
+    if is_noble_action(action_idx):
         noble_slot = _compact_noble_slot(board, action_idx - 66)
         return ActionDisplayDTO(kind="noble", verb="NOBLE", noble_slot=noble_slot, noble=_find_noble(board, noble_slot))
     return ActionDisplayDTO(kind="unknown", verb="UNKNOWN")
 
 
 def _is_continuation_action(action_idx: int) -> bool:
-    return 61 <= int(action_idx) <= 68
+    return is_continuation_action(action_idx)
 
 
 def _manual_reveal_for_action(action_idx: int, actor: str, step_after: StepState) -> PendingReveal | None:
@@ -585,7 +577,7 @@ def _manual_reveal_for_action(action_idx: int, actor: str, step_after: StepState
             actor=_seat_str(0 if actor == "P0" else 1),
             action_idx=action_idx,
         )
-    if 15 <= action_idx <= 26:
+    if is_reserve_faceup_action(action_idx):
         rel = action_idx - 15
         return PendingReveal(
             zone="faceup_card",
@@ -595,7 +587,7 @@ def _manual_reveal_for_action(action_idx: int, actor: str, step_after: StepState
             actor=_seat_str(0 if actor == "P0" else 1),
             action_idx=action_idx,
         )
-    if 27 <= action_idx <= 29:
+    if is_reserve_deck_action(action_idx):
         actor_seat = _seat_str(0 if actor == "P0" else 1)
         if step_after.current_player_id in (0, 1) and _seat_str(step_after.current_player_id) != actor_seat:
             occupied_reserved = 0
@@ -652,37 +644,37 @@ def _initial_setup_pending_reveals() -> list[PendingReveal]:
 
 
 def _placement_hint_for_action(action_idx: int) -> PlacementHintDTO:
-    if 0 <= action_idx <= 11:
+    if is_buy_faceup_action(action_idx):
         return PlacementHintDTO(
             zone="faceup_card",
             tier=(action_idx // 4) + 1,
             slot=(action_idx % 4),
         )
-    if 12 <= action_idx <= 14:
+    if is_buy_reserved_action(action_idx):
         return PlacementHintDTO(
             zone="reserved_card",
             slot=(action_idx - 12),
         )
-    if 15 <= action_idx <= 26:
+    if is_reserve_faceup_action(action_idx):
         rel = action_idx - 15
         return PlacementHintDTO(
             zone="faceup_card",
             tier=(rel // 4) + 1,
             slot=(rel % 4),
         )
-    if 27 <= action_idx <= 29:
+    if is_reserve_deck_action(action_idx):
         return PlacementHintDTO(zone="other", tier=(action_idx - 27 + 1))
-    if 30 <= action_idx <= 39:
+    if is_take3_action(action_idx):
         # Use the first color in the TAKE-3 tuple as a stable placement anchor.
-        color_idx = _TAKE3_TRIPLETS[action_idx - 30][0]
+        color_idx = TAKE3_TRIPLETS[action_idx - 30][0]
         return PlacementHintDTO(zone="bank_token", color=_COLOR_NAMES[color_idx])
-    if 40 <= action_idx <= 44:
+    if is_take2_same_action(action_idx):
         return PlacementHintDTO(zone="bank_token", color=_COLOR_NAMES[action_idx - 40])
-    if 45 <= action_idx <= 59:
-        pair = _TAKE2_PAIRS[action_idx - 45] if action_idx <= 54 else (_COLOR_NAMES[action_idx - 55],)
+    if is_take2_action(action_idx) or is_take1_action(action_idx):
+        pair = TAKE2_PAIRS[action_idx - 45] if is_take2_action(action_idx) else (_COLOR_NAMES[action_idx - 55],)
         color = _COLOR_NAMES[pair[0]] if isinstance(pair[0], int) else pair[0]
         return PlacementHintDTO(zone="bank_token", color=color)
-    if 61 <= action_idx <= 65:
+    if is_return_action(action_idx):
         return PlacementHintDTO(zone="bank_token", color=_COLOR_NAMES[action_idx - 61])
     return PlacementHintDTO(zone="other")
 
@@ -839,9 +831,7 @@ def _normalize_state_for_inference(state: dict[str, Any]) -> dict[str, Any]:
 
     bank = normalized.get("bank")
     if isinstance(bank, dict):
-        if "joker" in bank and "gold" not in bank:
-            bank["gold"] = bank.pop("joker")
-        bank.pop("joker", None)
+        _normalize_joker_token_keys(bank)
 
     players = normalized.get("players")
     if isinstance(players, list):
@@ -851,9 +841,7 @@ def _normalize_state_for_inference(state: dict[str, Any]) -> dict[str, Any]:
             tokens = player.get("tokens")
             if not isinstance(tokens, dict):
                 continue
-            if "joker" in tokens and "gold" not in tokens:
-                tokens["gold"] = tokens.pop("joker")
-            tokens.pop("joker", None)
+            _normalize_joker_token_keys(tokens)
 
     return normalized
 
@@ -862,10 +850,14 @@ def _canonicalize_token_map(tokens: Any) -> dict[str, int] | None:
     if not isinstance(tokens, dict):
         return None
     out = dict(tokens)
-    if "joker" in out and "gold" not in out:
-        out["gold"] = out.pop("joker")
-    out.pop("joker", None)
+    _normalize_joker_token_keys(out)
     return {str(k): int(v) for k, v in out.items()}
+
+
+def _normalize_joker_token_keys(tokens: dict[str, Any]) -> None:
+    if "joker" in tokens and "gold" not in tokens:
+        tokens["gold"] = tokens.pop("joker")
+    tokens.pop("joker", None)
 
 
 def _observable_state_for_inference(state: dict[str, Any]) -> dict[str, Any]:
@@ -899,6 +891,23 @@ def _observable_state_for_inference(state: dict[str, Any]) -> dict[str, Any]:
         "players": players,
         "available_noble_ids": list(state.get("available_noble_ids") or []),
     }
+
+
+def _engine_should_move_locked(
+    snapshot: GameSnapshotDTO,
+    config: GameConfig,
+    pending_reveals: list[PendingReveal],
+    *,
+    disallow_analysis_mode: bool = False,
+) -> bool:
+    should_move = (
+        snapshot.status == "IN_PROGRESS"
+        and snapshot.player_to_move != config.player_seat
+        and not any(_is_blocking_pending_reveal(item) for item in pending_reveals)
+    )
+    if disallow_analysis_mode:
+        should_move = should_move and not config.analysis_mode
+    return should_move
 
 
 def _faceup_change_slots(start_state: dict[str, Any], end_state: dict[str, Any]) -> list[tuple[int, int]]:
@@ -987,6 +996,197 @@ def _spendee_action_history_len(state: dict[str, Any]) -> int | None:
     if not isinstance(hist, list):
         return None
     return len(hist)
+
+
+def _infer_actions_between_snapshots(
+    env: SplendorNativeEnv,
+    start_state: dict[str, Any],
+    end_state: dict[str, Any],
+) -> list[int] | None:
+    hist_delta = _spendee_action_history_delta(start_state, end_state)
+    if hist_delta:
+        probe_hist = env.clone()
+        probe_hist.load_state(start_state)
+        legal_sequence = True
+        try:
+            for action_idx in hist_delta:
+                step = probe_hist.get_state()
+                if action_idx < 0 or action_idx >= int(step.mask.shape[0]) or not bool(step.mask[action_idx]):
+                    legal_sequence = False
+                    break
+                probe_hist.step(action_idx)
+            if legal_sequence and _states_equal(probe_hist.export_state(), end_state):
+                return hist_delta
+            # Hidden deck ordering can differ between bridge observations and
+            # native replay state. If metadata supplies a legal action delta,
+            # accept it for move-log inference even when hidden state differs.
+            if legal_sequence:
+                return hist_delta
+        except Exception:
+            pass
+
+    forced_deck_reserve = _forced_deck_reserve_action(start_state, end_state)
+    if forced_deck_reserve is not None:
+        probe_forced = env.clone()
+        probe_forced.load_state(start_state)
+        try:
+            step = probe_forced.get_state()
+            if (
+                0 <= int(forced_deck_reserve) < int(step.mask.shape[0])
+                and bool(step.mask[int(forced_deck_reserve)])
+            ):
+                probe_forced.step(int(forced_deck_reserve))
+                if _states_equal(probe_forced.export_state(), end_state):
+                    return [int(forced_deck_reserve)]
+                target_obs = _observable_state_for_inference(end_state)
+                if _observable_state_for_inference(probe_forced.export_state()) == target_obs:
+                    return [int(forced_deck_reserve)]
+        except Exception:
+            pass
+
+    probe = env.clone()
+    probe.load_state(start_state)
+    start_step = probe.get_state()
+    legal_first = np.flatnonzero(np.asarray(start_step.mask, dtype=np.bool_))
+
+    if bool(start_state.get("phase_flags", {}).get("is_noble_choice_phase")):
+        actor = int(start_step.current_player_id)
+        start_claimed = set(_claimed_noble_ids(start_state, actor))
+        end_claimed = set(_claimed_noble_ids(end_state, actor))
+        claimed_delta = sorted(end_claimed - start_claimed)
+        if len(claimed_delta) == 1:
+            available_nobles = _available_noble_ids(start_state)
+            noble_id = claimed_delta[0]
+            if noble_id in available_nobles:
+                noble_slot = available_nobles.index(noble_id)
+                action_idx = 66 + noble_slot
+                if 0 <= noble_slot <= 2 and bool(start_step.mask[action_idx]):
+                    return [action_idx]
+
+    if bool(start_state.get("phase_flags", {}).get("is_return_phase")):
+        actor = int(start_step.current_player_id)
+        start_players = start_state.get("players", [])
+        end_players = end_state.get("players", [])
+        start_bank = start_state.get("bank", {})
+        end_bank = end_state.get("bank", {})
+        if (
+            isinstance(start_players, list)
+            and isinstance(end_players, list)
+            and 0 <= actor < len(start_players)
+            and 0 <= actor < len(end_players)
+            and isinstance(start_bank, dict)
+            and isinstance(end_bank, dict)
+        ):
+            returned_colors: list[str] = []
+            start_tokens = start_players[actor].get("tokens", {})
+            end_tokens = end_players[actor].get("tokens", {})
+            if isinstance(start_tokens, dict) and isinstance(end_tokens, dict):
+                for color_idx, color in enumerate(_COLOR_NAMES):
+                    start_player_count = int(start_tokens.get(color, 0))
+                    end_player_count = int(end_tokens.get(color, 0))
+                    start_bank_count = int(start_bank.get(color, 0))
+                    end_bank_count = int(end_bank.get(color, 0))
+                    if end_player_count == start_player_count - 1 and end_bank_count == start_bank_count + 1:
+                        returned_colors.append(color)
+                if len(returned_colors) == 1:
+                    action_idx = 61 + _COLOR_NAMES.index(returned_colors[0])
+                    if is_return_action(action_idx) and bool(start_step.mask[action_idx]):
+                        return [action_idx]
+
+    def _matching_sequences(matcher: Callable[[dict[str, Any]], bool], max_actions: int = 4) -> list[list[int]]:
+        matches: list[list[int]] = []
+        for first in legal_first:
+            first_idx = int(first)
+            first_env = probe.clone()
+            first_env.step(first_idx)
+            first_seq = [first_idx]
+            if matcher(first_env.export_state()):
+                matches.append(first_seq)
+
+            frontier: list[tuple[SplendorNativeEnv, list[int]]] = [(first_env, first_seq)]
+            while frontier:
+                next_frontier: list[tuple[SplendorNativeEnv, list[int]]] = []
+                for cur_env, cur_seq in frontier:
+                    if len(cur_seq) >= max_actions:
+                        continue
+                    cur_step = cur_env.get_state()
+                    legal_next = np.flatnonzero(np.asarray(cur_step.mask, dtype=np.bool_))
+                    for nxt in legal_next:
+                        nxt_idx = int(nxt)
+                        if not _is_continuation_action(nxt_idx):
+                            continue
+                        nxt_env = cur_env.clone()
+                        nxt_env.step(nxt_idx)
+                        nxt_seq = [*cur_seq, nxt_idx]
+                        if matcher(nxt_env.export_state()):
+                            matches.append(nxt_seq)
+                        next_frontier.append((nxt_env, nxt_seq))
+                frontier = next_frontier
+        return matches
+
+    exact_candidates = _matching_sequences(lambda candidate_state: _states_equal(candidate_state, end_state))
+    if len(exact_candidates) == 1:
+        return exact_candidates[0]
+    if len(exact_candidates) > 1:
+        exact_candidates.sort(key=lambda seq: (len(seq), seq))
+        return exact_candidates[0]
+
+    # Fallback for bridge/native hidden-state drift: match on robust
+    # observable state features to recover action intent.
+    target_obs = _observable_transition_for_inference(start_state, end_state)
+    observable_candidates = _matching_sequences(
+        lambda candidate_state: _observable_transition_for_inference(start_state, candidate_state) == target_obs
+    )
+
+    if len(observable_candidates) == 1:
+        return observable_candidates[0]
+    if len(observable_candidates) > 1:
+        observable_candidates.sort(key=lambda seq: (len(seq), seq))
+        return observable_candidates[0]
+
+    actor = int(start_step.current_player_id)
+    start_purchased = _player_purchased_ids(start_state, actor)
+    end_purchased = _player_purchased_ids(end_state, actor)
+    purchased_delta = sorted(end_purchased - start_purchased)
+    if len(purchased_delta) == 1:
+        purchased_card_id = int(purchased_delta[0])
+        start_faceup_rows = start_state.get("faceup_card_ids")
+        end_faceup_rows = end_state.get("faceup_card_ids")
+        faceup_match_actions: list[int] = []
+        if isinstance(start_faceup_rows, list) and isinstance(end_faceup_rows, list):
+            for tier_idx, (start_row, end_row) in enumerate(zip(start_faceup_rows, end_faceup_rows), start=1):
+                if not isinstance(start_row, list) or not isinstance(end_row, list):
+                    continue
+                for slot_idx, (start_card, end_card) in enumerate(zip(start_row, end_row)):
+                    if int(start_card) != purchased_card_id:
+                        continue
+                    if int(end_card) == purchased_card_id:
+                        continue
+                    action_idx = (tier_idx - 1) * 4 + slot_idx
+                    if 0 <= action_idx <= 11 and bool(start_step.mask[action_idx]):
+                        faceup_match_actions.append(action_idx)
+        if len(faceup_match_actions) == 1:
+            return [faceup_match_actions[0]]
+
+        reserved_by_slot = _player_cards_by_slot(start_state, actor)
+        public_match_slots = [
+            slot
+            for slot, item in reserved_by_slot.items()
+            if bool(item.get("is_public", True)) and int(item.get("card_id", -1)) == purchased_card_id
+        ]
+        hidden_slots = [
+            slot
+            for slot, item in reserved_by_slot.items()
+            if not bool(item.get("is_public", True))
+        ]
+        candidate_slots = public_match_slots
+        if not candidate_slots and len(hidden_slots) == 1:
+            candidate_slots = hidden_slots
+                if len(candidate_slots) == 1:
+            action_idx = 12 + int(candidate_slots[0])
+                    if is_buy_reserved_action(action_idx) and bool(start_step.mask[action_idx]):
+                return [action_idx]
+    return None
 
 
 def _spendee_visible_noble_slots(state: dict[str, Any]) -> dict[int, int] | None:
@@ -1957,190 +2157,7 @@ class GameManager:
         return exported_state
 
     def _infer_actions_between_snapshots_locked(self, start_state: dict[str, Any], end_state: dict[str, Any]) -> list[int] | None:
-        hist_delta = _spendee_action_history_delta(start_state, end_state)
-        if hist_delta:
-            probe_hist = self._ensure_env_locked().clone()
-            probe_hist.load_state(start_state)
-            legal_sequence = True
-            try:
-                for action_idx in hist_delta:
-                    step = probe_hist.get_state()
-                    if action_idx < 0 or action_idx >= int(step.mask.shape[0]) or not bool(step.mask[action_idx]):
-                        legal_sequence = False
-                        break
-                    probe_hist.step(action_idx)
-                if legal_sequence and _states_equal(probe_hist.export_state(), end_state):
-                    return hist_delta
-                # Hidden deck ordering can differ between bridge observations and
-                # native replay state. If metadata supplies a legal action delta,
-                # accept it for move-log inference even when hidden state differs.
-                if legal_sequence:
-                    return hist_delta
-            except Exception:
-                pass
-
-        forced_deck_reserve = _forced_deck_reserve_action(start_state, end_state)
-        if forced_deck_reserve is not None:
-            probe_forced = self._ensure_env_locked().clone()
-            probe_forced.load_state(start_state)
-            try:
-                step = probe_forced.get_state()
-                if (
-                    0 <= int(forced_deck_reserve) < int(step.mask.shape[0])
-                    and bool(step.mask[int(forced_deck_reserve)])
-                ):
-                    probe_forced.step(int(forced_deck_reserve))
-                    if _states_equal(probe_forced.export_state(), end_state):
-                        return [int(forced_deck_reserve)]
-                    target_obs = _observable_state_for_inference(end_state)
-                    if _observable_state_for_inference(probe_forced.export_state()) == target_obs:
-                        return [int(forced_deck_reserve)]
-            except Exception:
-                pass
-
-        probe = self._ensure_env_locked().clone()
-        probe.load_state(start_state)
-        start_step = probe.get_state()
-        legal_first = np.flatnonzero(np.asarray(start_step.mask, dtype=np.bool_))
-
-        if bool(start_state.get("phase_flags", {}).get("is_noble_choice_phase")):
-            actor = int(start_step.current_player_id)
-            start_claimed = set(_claimed_noble_ids(start_state, actor))
-            end_claimed = set(_claimed_noble_ids(end_state, actor))
-            claimed_delta = sorted(end_claimed - start_claimed)
-            if len(claimed_delta) == 1:
-                available_nobles = _available_noble_ids(start_state)
-                noble_id = claimed_delta[0]
-                if noble_id in available_nobles:
-                    noble_slot = available_nobles.index(noble_id)
-                    action_idx = 66 + noble_slot
-                    if 0 <= noble_slot <= 2 and bool(start_step.mask[action_idx]):
-                        return [action_idx]
-
-        if bool(start_state.get("phase_flags", {}).get("is_return_phase")):
-            actor = int(start_step.current_player_id)
-            start_players = start_state.get("players", [])
-            end_players = end_state.get("players", [])
-            start_bank = start_state.get("bank", {})
-            end_bank = end_state.get("bank", {})
-            if (
-                isinstance(start_players, list)
-                and isinstance(end_players, list)
-                and 0 <= actor < len(start_players)
-                and 0 <= actor < len(end_players)
-                and isinstance(start_bank, dict)
-                and isinstance(end_bank, dict)
-            ):
-                returned_colors: list[str] = []
-                start_tokens = start_players[actor].get("tokens", {})
-                end_tokens = end_players[actor].get("tokens", {})
-                if isinstance(start_tokens, dict) and isinstance(end_tokens, dict):
-                    for color_idx, color in enumerate(_COLOR_NAMES):
-                        start_player_count = int(start_tokens.get(color, 0))
-                        end_player_count = int(end_tokens.get(color, 0))
-                        start_bank_count = int(start_bank.get(color, 0))
-                        end_bank_count = int(end_bank.get(color, 0))
-                        if end_player_count == start_player_count - 1 and end_bank_count == start_bank_count + 1:
-                            returned_colors.append(color)
-                    if len(returned_colors) == 1:
-                        action_idx = 61 + _COLOR_NAMES.index(returned_colors[0])
-                        if 61 <= action_idx <= 65 and bool(start_step.mask[action_idx]):
-                            return [action_idx]
-
-        def _matching_sequences(matcher: Callable[[dict[str, Any]], bool], max_actions: int = 4) -> list[list[int]]:
-            matches: list[list[int]] = []
-            for first in legal_first:
-                first_idx = int(first)
-                first_env = probe.clone()
-                first_env.step(first_idx)
-                first_seq = [first_idx]
-                if matcher(first_env.export_state()):
-                    matches.append(first_seq)
-
-                frontier: list[tuple[SplendorNativeEnv, list[int]]] = [(first_env, first_seq)]
-                while frontier:
-                    next_frontier: list[tuple[SplendorNativeEnv, list[int]]] = []
-                    for cur_env, cur_seq in frontier:
-                        if len(cur_seq) >= max_actions:
-                            continue
-                        cur_step = cur_env.get_state()
-                        legal_next = np.flatnonzero(np.asarray(cur_step.mask, dtype=np.bool_))
-                        for nxt in legal_next:
-                            nxt_idx = int(nxt)
-                            if not _is_continuation_action(nxt_idx):
-                                continue
-                            nxt_env = cur_env.clone()
-                            nxt_env.step(nxt_idx)
-                            nxt_seq = [*cur_seq, nxt_idx]
-                            if matcher(nxt_env.export_state()):
-                                matches.append(nxt_seq)
-                            next_frontier.append((nxt_env, nxt_seq))
-                    frontier = next_frontier
-            return matches
-
-        exact_candidates = _matching_sequences(lambda candidate_state: _states_equal(candidate_state, end_state))
-        if len(exact_candidates) == 1:
-            return exact_candidates[0]
-        if len(exact_candidates) > 1:
-            exact_candidates.sort(key=lambda seq: (len(seq), seq))
-            return exact_candidates[0]
-
-        # Fallback for bridge/native hidden-state drift: match on robust
-        # observable state features to recover action intent.
-        target_obs = _observable_transition_for_inference(start_state, end_state)
-        observable_candidates = _matching_sequences(
-            lambda candidate_state: _observable_transition_for_inference(start_state, candidate_state) == target_obs
-        )
-
-        if len(observable_candidates) == 1:
-            return observable_candidates[0]
-        if len(observable_candidates) > 1:
-            observable_candidates.sort(key=lambda seq: (len(seq), seq))
-            return observable_candidates[0]
-
-        actor = int(start_step.current_player_id)
-        start_purchased = _player_purchased_ids(start_state, actor)
-        end_purchased = _player_purchased_ids(end_state, actor)
-        purchased_delta = sorted(end_purchased - start_purchased)
-        if len(purchased_delta) == 1:
-            purchased_card_id = int(purchased_delta[0])
-            start_faceup_rows = start_state.get("faceup_card_ids")
-            end_faceup_rows = end_state.get("faceup_card_ids")
-            faceup_match_actions: list[int] = []
-            if isinstance(start_faceup_rows, list) and isinstance(end_faceup_rows, list):
-                for tier_idx, (start_row, end_row) in enumerate(zip(start_faceup_rows, end_faceup_rows), start=1):
-                    if not isinstance(start_row, list) or not isinstance(end_row, list):
-                        continue
-                    for slot_idx, (start_card, end_card) in enumerate(zip(start_row, end_row)):
-                        if int(start_card) != purchased_card_id:
-                            continue
-                        if int(end_card) == purchased_card_id:
-                            continue
-                        action_idx = (tier_idx - 1) * 4 + slot_idx
-                        if 0 <= action_idx <= 11 and bool(start_step.mask[action_idx]):
-                            faceup_match_actions.append(action_idx)
-            if len(faceup_match_actions) == 1:
-                return [faceup_match_actions[0]]
-
-            reserved_by_slot = _player_cards_by_slot(start_state, actor)
-            public_match_slots = [
-                slot
-                for slot, item in reserved_by_slot.items()
-                if bool(item.get("is_public", True)) and int(item.get("card_id", -1)) == purchased_card_id
-            ]
-            hidden_slots = [
-                slot
-                for slot, item in reserved_by_slot.items()
-                if not bool(item.get("is_public", True))
-            ]
-            candidate_slots = public_match_slots
-            if not candidate_slots and len(hidden_slots) == 1:
-                candidate_slots = hidden_slots
-            if len(candidate_slots) == 1:
-                action_idx = 12 + int(candidate_slots[0])
-                if 12 <= action_idx <= 14 and bool(start_step.mask[action_idx]):
-                    return [action_idx]
-        return None
+        return _infer_actions_between_snapshots(self._ensure_env_locked(), start_state, end_state)
 
     def _rebuild_move_log_from_snapshot_history_locked(
         self,
@@ -2706,12 +2723,7 @@ class GameManager:
             self._append_move_locked(actor, int(req.action_idx), step_after, board_before=board_before)
             self._record_event_locked(GameEvent(kind="move", actor=actor, action_idx=int(req.action_idx)))
             snapshot = self._snapshot_locked()
-            engine_should_move = (
-                snapshot.status == "IN_PROGRESS"
-                and not config.analysis_mode
-                and snapshot.player_to_move != config.player_seat
-                and not any(_is_blocking_pending_reveal(item) for item in self._pending_reveals)
-            )
+            engine_should_move = _engine_should_move_locked(snapshot, config, self._pending_reveals, disallow_analysis_mode=True)
             return PlayerMoveResponse(snapshot=snapshot, engine_should_move=engine_should_move)
 
     def _get_model_locked(self, config: GameConfig, *, device: str):
@@ -3254,11 +3266,7 @@ class GameManager:
                 self._pending_reveals.pop(pending_index)
             self._record_event_locked(GameEvent(kind="reveal_card", tier=req.tier, slot=req.slot, card_id=req.card_id))
             snapshot = self._snapshot_locked()
-            engine_should_move = (
-                snapshot.status == "IN_PROGRESS"
-                and snapshot.player_to_move != config.player_seat
-                and not any(_is_blocking_pending_reveal(item) for item in self._pending_reveals)
-            )
+            engine_should_move = _engine_should_move_locked(snapshot, config, self._pending_reveals)
             return RevealCardResponse(snapshot=snapshot, engine_should_move=engine_should_move)
 
     def reveal_noble(self, req: RevealNobleRequest) -> RevealCardResponse:
@@ -3280,11 +3288,7 @@ class GameManager:
                 self._pending_reveals.pop(pending_index)
             self._record_event_locked(GameEvent(kind="reveal_noble", slot=req.slot, noble_id=req.noble_id))
             snapshot = self._snapshot_locked()
-            engine_should_move = (
-                snapshot.status == "IN_PROGRESS"
-                and snapshot.player_to_move != config.player_seat
-                and not any(_is_blocking_pending_reveal(item) for item in self._pending_reveals)
-            )
+            engine_should_move = _engine_should_move_locked(snapshot, config, self._pending_reveals)
             return RevealCardResponse(snapshot=snapshot, engine_should_move=engine_should_move)
 
     def reveal_reserved_card(self, req: RevealReservedCardRequest) -> RevealCardResponse:
@@ -3320,11 +3324,7 @@ class GameManager:
                 self._pending_reveals.pop(pending_index)
             self._record_event_locked(GameEvent(kind="reveal_reserved_card", actor=req.seat, slot=req.slot, card_id=req.card_id))
             snapshot = self._snapshot_locked()
-            engine_should_move = (
-                snapshot.status == "IN_PROGRESS"
-                and snapshot.player_to_move != config.player_seat
-                and not any(_is_blocking_pending_reveal(item) for item in self._pending_reveals)
-            )
+            engine_should_move = _engine_should_move_locked(snapshot, config, self._pending_reveals)
             return RevealCardResponse(snapshot=snapshot, engine_should_move=engine_should_move)
 
     def resign(self) -> GameSnapshotDTO:

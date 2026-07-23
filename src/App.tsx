@@ -11,25 +11,35 @@ import {
   CatalogCardDTO,
   CatalogNobleDTO,
   BoardStateDTO,
-  CardDTO,
-  ColorCountsDTO,
   EngineJobStatusDTO,
   EngineThinkRequest,
   EngineThinkResponse,
   GameSnapshotDTO,
   MoveLogEntryDTO,
-  NobleDTO,
   PlayerMoveResponse,
   RevealCardResponse,
   SearchType,
   Seat,
-  TokenCountsDTO,
 } from './types';
 import { GameBoard } from './components/board/GameBoard';
 import { ActionLabel } from './components/ActionLabel';
 import { CardView } from './components/board/CardView';
 import { NobleView } from './components/board/NobleView';
 import { BoardViewport } from './components/board/BoardViewport';
+import { downloadBoardImage } from './utils/exportBoardImage';
+import {
+  isBuyFaceupAction,
+  isBuyReservedAction,
+  isContinuationAction,
+  isNobleAction,
+  isReserveDeckAction,
+  isReserveFaceupAction,
+  isReturnAction,
+  isTake1Action,
+  isTake2Action,
+  isTake2SameAction,
+  isTake3Action,
+} from './lib/actionEncoding';
 
 type UiStatus = 'IDLE' | 'WAITING_ENGINE' | 'WAITING_PLAYER' | 'WAITING_REVEAL' | 'GAME_OVER';
 type HomeView = 'HOME' | 'QUICK' | 'ANALYSIS' | 'ABOUT';
@@ -48,10 +58,6 @@ const MAX_SEARCH_SIMULATIONS = 1_000_000;
 function analysisPublishInterval(totalSimulations: number): number {
   const normalized = Number.isInteger(totalSimulations) && totalSimulations >= 1 ? totalSimulations : 1;
   return Math.max(64, Math.min(2000, Math.floor(normalized / 20) || 1));
-}
-
-function isContinuationAction(actionIdx: number): boolean {
-  return actionIdx >= 61 && actionIdx <= 68;
 }
 
 function winnerLabel(winner: number): string | null {
@@ -1417,71 +1423,26 @@ const displayedP0EvalRef = useRef<number | null>(null);
         const variationCtx = deriveVariationContext(beforeSnapshot, beforeSnapshotIndex, actor);
         const expectedMainlineMove = variationCtx?.expectedMainlineMove ?? null;
         const isOnMainlineSnapshot = variationCtx?.isOnMainlineSnapshot ?? false;
-        const baseFullMoveNumber = variationCtx?.baseFullMoveNumber ?? 1;
+        const shouldStartNewBranch = activeVariationBranchIdRef.current == null && isOnMainlineSnapshot && expectedMainlineMove != null && expectedMainlineMove.action_idx !== actionIdx;
 
-        if (activeVariationBranchIdRef.current == null) {
-          const isDeviation = isOnMainlineSnapshot && expectedMainlineMove != null && expectedMainlineMove.action_idx !== actionIdx;
-          if (isDeviation) {
-            const branchId = variationBranchIdCounterRef.current++;
-            selectVariationMove(branchId, 0);
-            setVariationBranches((prev) => [
-              ...prev,
-              {
-                id: branchId,
-                anchorSnapshotIndex: beforeSnapshotIndex,
-                moves: [{
-                  kind: 'move',
-                  actor,
-                  actionIdx,
-                  replayActionIdxList: [actionIdx],
-                  label,
-                  display,
-                  fullMoveNumber: baseFullMoveNumber,
-                  targetSnapshotIndex: result.snapshot.current_snapshot_index ?? -1,
-                  targetTurnIndex: result.snapshot.turn_index,
-                  jumpBySnapshot: result.snapshot.current_snapshot_index != null,
-                }],
-              },
-            ]);
-          }
-        } else {
-          const activeId = activeVariationBranchIdRef.current;
-          const selectedMoveIndex = activeVariationSelection?.branchId === activeId
-            ? activeVariationSelection.moveIndex
-            : null;
-          setVariationBranches((prev) => prev.map((branch) => {
-            if (branch.id !== activeId) {
-              return branch;
-            }
-            const preservedMoves = selectedMoveIndex != null
-              ? branch.moves.slice(0, selectedMoveIndex + 1)
-              : branch.moves;
-            return {
-              ...branch,
-              moves: [...preservedMoves, {
-                kind: 'move',
-                actor,
-                actionIdx,
-                replayActionIdxList: [actionIdx],
-                label,
-                display,
-                fullMoveNumber: (() => {
-                  const last = preservedMoves[preservedMoves.length - 1];
-                  if (!last) return baseFullMoveNumber;
-                  return last.actor === 'P1' && actor === 'P0'
-                    ? last.fullMoveNumber + 1
-                    : last.fullMoveNumber;
-                })(),
-                targetSnapshotIndex: result.snapshot.current_snapshot_index ?? -1,
-                targetTurnIndex: result.snapshot.turn_index,
-                jumpBySnapshot: result.snapshot.current_snapshot_index != null,
-              }],
-            };
-          }));
-          if (activeId != null) {
-            selectVariationMove(activeId, (selectedMoveIndex ?? -1) + 1);
-          }
-        }
+        appendVariationNode(
+          beforeSnapshot,
+          beforeSnapshotIndex,
+          actor,
+          shouldStartNewBranch,
+          (fullMoveNumber) => ({
+            kind: 'move',
+            actor,
+            actionIdx,
+            replayActionIdxList: [actionIdx],
+            label,
+            display,
+            fullMoveNumber,
+            targetSnapshotIndex: result.snapshot.current_snapshot_index ?? -1,
+            targetTurnIndex: result.snapshot.turn_index,
+            jumpBySnapshot: result.snapshot.current_snapshot_index != null,
+          }),
+        );
       }
 
       const forcedSearchType = options?.analyzeWithSearchType ?? null;
@@ -1936,21 +1897,19 @@ const displayedP0EvalRef = useRef<number | null>(null);
     );
   }
 
-  function appendVariationEditNode(
+  function appendVariationNode(
     beforeSnapshot: GameSnapshotDTO,
     beforeSnapshotIndex: number,
     actor: Seat,
-    label: string,
-    resultSnapshot: GameSnapshotDTO,
-    kind: 'edit_faceup' | 'edit_reserved' | 'edit_noble',
-    payload: { tier?: number; slot?: number; seat?: Seat; cardId?: number; nobleId?: number },
+    shouldStartNewBranch: boolean,
+    buildEntry: (fullMoveNumber: number) => VariationMove,
   ): void {
     const variationCtx = deriveVariationContext(beforeSnapshot, beforeSnapshotIndex, actor);
     const isOnMainlineSnapshot = variationCtx?.isOnMainlineSnapshot ?? false;
     const baseFullMoveNumber = variationCtx?.baseFullMoveNumber ?? 1;
 
     if (activeVariationBranchIdRef.current == null) {
-      if (!isOnMainlineSnapshot) {
+      if (!shouldStartNewBranch || !isOnMainlineSnapshot) {
         return;
       }
       const branchId = variationBranchIdCounterRef.current++;
@@ -1960,17 +1919,7 @@ const displayedP0EvalRef = useRef<number | null>(null);
         {
           id: branchId,
           anchorSnapshotIndex: beforeSnapshotIndex,
-          moves: [{
-            kind,
-            actor,
-            actionIdx: -1,
-            label,
-            fullMoveNumber: baseFullMoveNumber,
-            targetSnapshotIndex: resultSnapshot.current_snapshot_index ?? -1,
-            targetTurnIndex: resultSnapshot.turn_index,
-            jumpBySnapshot: resultSnapshot.current_snapshot_index != null,
-            ...payload,
-          }],
+          moves: [buildEntry(baseFullMoveNumber)],
         },
       ]);
       return;
@@ -1993,25 +1942,40 @@ const displayedP0EvalRef = useRef<number | null>(null);
         : (last.actor === 'P1' && actor === 'P0' ? last.fullMoveNumber + 1 : last.fullMoveNumber);
       return {
         ...branch,
-        moves: [
-          ...preservedMoves,
-          {
-            kind,
-            actor,
-            actionIdx: -1,
-            label,
-            fullMoveNumber,
-            targetSnapshotIndex: resultSnapshot.current_snapshot_index ?? -1,
-            targetTurnIndex: resultSnapshot.turn_index,
-            jumpBySnapshot: resultSnapshot.current_snapshot_index != null,
-            ...payload,
-          },
-        ],
+        moves: [...preservedMoves, buildEntry(fullMoveNumber)],
       };
     }));
     if (activeId != null) {
       selectVariationMove(activeId, (selectedMoveIndex ?? -1) + 1);
     }
+  }
+
+  function appendVariationEditNode(
+    beforeSnapshot: GameSnapshotDTO,
+    beforeSnapshotIndex: number,
+    actor: Seat,
+    label: string,
+    resultSnapshot: GameSnapshotDTO,
+    kind: 'edit_faceup' | 'edit_reserved' | 'edit_noble',
+    payload: { tier?: number; slot?: number; seat?: Seat; cardId?: number; nobleId?: number },
+  ): void {
+    appendVariationNode(
+      beforeSnapshot,
+      beforeSnapshotIndex,
+      actor,
+      true,
+      (fullMoveNumber) => ({
+        kind,
+        actor,
+        actionIdx: -1,
+        label,
+        fullMoveNumber,
+        targetSnapshotIndex: resultSnapshot.current_snapshot_index ?? -1,
+        targetTurnIndex: resultSnapshot.turn_index,
+        jumpBySnapshot: resultSnapshot.current_snapshot_index != null,
+        ...payload,
+      }),
+    );
   }
 
   async function onRevealCardWithId(tier: number, slot: number, cardId?: number): Promise<void> {
@@ -2273,60 +2237,65 @@ const displayedP0EvalRef = useRef<number | null>(null);
     }
     return deepAnalysisSimulations >= 1;
   })();
-  const searchSettingsSummary = (() => {
-    if (searchType === 'alphabeta') {
-      return `${searchTypeLabel(searchType)} • depth ${alphabetaDepth}`;
-    }
-    if (searchType === 'forced_child') {
-      return `${searchTypeLabel(searchType)} • ${searchSimulations.toLocaleString()} per action`;
-    }
-    if (searchType === 'mcts_bootstrap') {
-      if (homeView === 'ANALYSIS') {
-        return `${searchTypeLabel(searchType)} | ${searchSimulations.toLocaleString()} total sims | bootstrap ${searchBootstrapSimulationsPerAction.toLocaleString()} per action | publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} | batch ${searchEvalBatchSize.toLocaleString()}`;
-      }
-      return `${searchTypeLabel(searchType)} | ${searchSimulations.toLocaleString()} sims | bootstrap ${searchBootstrapSimulationsPerAction.toLocaleString()} per action | batch ${searchEvalBatchSize.toLocaleString()}`;
-    }
-    if (searchType === 'mcts_gpu') {
-      if (homeView === 'ANALYSIS') {
-        return `${searchTypeLabel(searchType)} | ${searchSimulations.toLocaleString()} total sims | publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} | batch ${searchEvalBatchSize.toLocaleString()}`;
-      }
-      return `${searchTypeLabel(searchType)} | ${searchSimulations.toLocaleString()} sims | batch ${searchEvalBatchSize.toLocaleString()}`;
-    }
-    if (homeView === 'ANALYSIS' && searchType === 'mcts') {
-      return `${searchTypeLabel(searchType)} • ${searchSimulations.toLocaleString()} total sims • publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} sims`;
-    }
-    return `${searchTypeLabel(searchType)} • ${searchSimulations.toLocaleString()} sims`;
-  })();
-  const deepAnalysisSettingsLabel = (() => {
-    if (searchType === 'alphabeta') {
-      return 'Depth';
-    }
-    if (searchType === 'forced_child') {
-      return 'Per Action';
-    }
-    if (searchType === 'mcts_bootstrap') {
-      return 'Deep';
-    }
-    return 'Deep';
-  })();
-  const deepAnalysisSettingsTitle = (() => {
-    if (searchType === 'alphabeta') {
-      return 'Alpha-Beta depth per move';
-    }
-    if (searchType === 'forced_child') {
-      return 'Forced search simulations per action for each move';
-    }
-    if (searchType === 'mcts_bootstrap') {
-      return 'Deep analysis total simulations per move';
-    }
-    return 'Deep analysis simulations per move';
-  })();
-  const bootstrapSettingsTitle = (() => {
-    if (searchType === 'mcts_bootstrap') {
-      return 'Bootstrap simulations per legal root action';
-    }
-    return 'Bootstrap simulations per action';
-  })();
+  const searchSettingsCopy = {
+    alphabeta: {
+      summary: () => `${searchTypeLabel('alphabeta')} • depth ${alphabetaDepth}`,
+      deepAnalysisSettingsLabel: 'Depth',
+      deepAnalysisSettingsTitle: 'Alpha-Beta depth per move',
+      bootstrapSettingsTitle: 'Bootstrap simulations per action',
+    },
+    forced_child: {
+      summary: () => `${searchTypeLabel('forced_child')} • ${searchSimulations.toLocaleString()} per action`,
+      deepAnalysisSettingsLabel: 'Per Action',
+      deepAnalysisSettingsTitle: 'Forced search simulations per action for each move',
+      bootstrapSettingsTitle: 'Bootstrap simulations per action',
+    },
+    ismcts: {
+      summary: () => `${searchTypeLabel('ismcts')} • ${searchSimulations.toLocaleString()} sims`,
+      deepAnalysisSettingsLabel: 'Deep',
+      deepAnalysisSettingsTitle: 'Deep analysis simulations per move',
+      bootstrapSettingsTitle: 'Bootstrap simulations per action',
+    },
+    mcts: {
+      summary: () => (
+        homeView === 'ANALYSIS'
+          ? `${searchTypeLabel('mcts')} • ${searchSimulations.toLocaleString()} total sims • publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} sims`
+          : `${searchTypeLabel('mcts')} • ${searchSimulations.toLocaleString()} sims`
+      ),
+      deepAnalysisSettingsLabel: 'Deep',
+      deepAnalysisSettingsTitle: 'Deep analysis simulations per move',
+      bootstrapSettingsTitle: 'Bootstrap simulations per action',
+    },
+    mcts_gpu: {
+      summary: () => (
+        homeView === 'ANALYSIS'
+          ? `${searchTypeLabel('mcts_gpu')} | ${searchSimulations.toLocaleString()} total sims | publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} | batch ${searchEvalBatchSize.toLocaleString()}`
+          : `${searchTypeLabel('mcts_gpu')} | ${searchSimulations.toLocaleString()} sims | batch ${searchEvalBatchSize.toLocaleString()}`
+      ),
+      deepAnalysisSettingsLabel: 'Deep',
+      deepAnalysisSettingsTitle: 'Deep analysis simulations per move',
+      bootstrapSettingsTitle: 'Bootstrap simulations per action',
+    },
+    mcts_bootstrap: {
+      summary: () => (
+        homeView === 'ANALYSIS'
+          ? `${searchTypeLabel('mcts_bootstrap')} | ${searchSimulations.toLocaleString()} total sims | bootstrap ${searchBootstrapSimulationsPerAction.toLocaleString()} per action | publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} | batch ${searchEvalBatchSize.toLocaleString()}`
+          : `${searchTypeLabel('mcts_bootstrap')} | ${searchSimulations.toLocaleString()} sims | bootstrap ${searchBootstrapSimulationsPerAction.toLocaleString()} per action | batch ${searchEvalBatchSize.toLocaleString()}`
+      ),
+      deepAnalysisSettingsLabel: 'Deep',
+      deepAnalysisSettingsTitle: 'Deep analysis total simulations per move',
+      bootstrapSettingsTitle: 'Bootstrap simulations per legal root action',
+    },
+  } satisfies Record<SearchType, {
+    summary: () => string;
+    deepAnalysisSettingsLabel: string;
+    deepAnalysisSettingsTitle: string;
+    bootstrapSettingsTitle: string;
+  }>;
+  const searchSettingsSummary = searchSettingsCopy[searchType].summary();
+  const deepAnalysisSettingsLabel = searchSettingsCopy[searchType].deepAnalysisSettingsLabel;
+  const deepAnalysisSettingsTitle = searchSettingsCopy[searchType].deepAnalysisSettingsTitle;
+  const bootstrapSettingsTitle = searchSettingsCopy[searchType].bootstrapSettingsTitle;
   const deepAnalysisBatchSizeTitle = 'Deep analysis evaluation batch size';
   const activeReveal = useMemo(() => {
     if (!snapshot || !activeRevealKey) {
@@ -2595,15 +2564,15 @@ const displayedP0EvalRef = useRef<number | null>(null);
     };
     for (const detail of allAnalysisMoves) {
       const idx = detail.action_idx;
-      if ((0 <= idx && idx <= 14)) {
+      if (isBuyFaceupAction(idx) || isBuyReservedAction(idx)) {
         groups.buy.push(detail);
-      } else if (15 <= idx && idx <= 29) {
+      } else if (isReserveFaceupAction(idx) || isReserveDeckAction(idx)) {
         groups.reserve.push(detail);
-      } else if (30 <= idx && idx <= 59) {
+      } else if (isTake3Action(idx) || isTake2SameAction(idx) || isTake2Action(idx) || isTake1Action(idx)) {
         groups.take.push(detail);
-      } else if (61 <= idx && idx <= 65) {
+      } else if (isReturnAction(idx)) {
         groups.return.push(detail);
-      } else if (66 <= idx && idx <= 68) {
+      } else if (isNobleAction(idx)) {
         groups.noble.push(detail);
       } else {
         groups.other.push(detail);
@@ -2989,352 +2958,7 @@ const displayedP0EvalRef = useRef<number | null>(null);
 
     try {
       setError(null);
-
-      const escapeXml = (value: string): string => value
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&apos;');
-      const rootStyle = getComputedStyle(document.documentElement);
-      const bodyStyle = getComputedStyle(document.body);
-      const pageBackground = bodyStyle.backgroundColor || 'rgb(17, 19, 23)';
-      const panelFill = rootStyle.getPropertyValue('--panel').trim() || '#17181b';
-      const boardFill = rootStyle.getPropertyValue('--board-surface-bg').trim() || '#2e343d';
-      const textLight = rootStyle.color || '#eef2fb';
-      const textMuted = '#9aa6bc';
-
-      const colorMap: Record<string, string> = {
-        white: '#f7f5e9',
-        blue: '#3e59ab',
-        green: '#20805c',
-        red: '#a64242',
-        black: '#52422f',
-        gold: '#d6b35f',
-      };
-      const reqOrder: Array<'white' | 'blue' | 'green' | 'red' | 'black'> = ['white', 'blue', 'green', 'red', 'black'];
-      const tokenOrder: Array<'gold' | 'white' | 'blue' | 'green' | 'red' | 'black'> = ['gold', 'white', 'blue', 'green', 'red', 'black'];
-      const width = 1880;
-      const height = 1040;
-
-      const renderToken = (x: number, y: number, color: keyof TokenCountsDTO, count: number): string => `
-        <g transform="translate(${x} ${y})">
-          <circle cx="30" cy="30" r="24" fill="${colorMap[color]}" stroke="#1e223080" stroke-width="3" />
-          <text x="30" y="38" text-anchor="middle" font-size="26" font-weight="800" fill="${color === 'white' || color === 'gold' ? '#1f2430' : '#ffffff'}">${count}</text>
-        </g>
-      `;
-      const renderCostRow = (cost: ColorCountsDTO, startX: number, y: number): string => reqOrder
-        .filter((color) => cost[color] > 0)
-        .map((color, idx) => `
-          <g transform="translate(${startX + idx * 34} ${y})">
-            <circle cx="14" cy="14" r="14" fill="${colorMap[color]}" stroke="#1e223080" stroke-width="2" />
-            <text x="14" y="19" text-anchor="middle" font-size="14" font-weight="800" fill="#ffffff">${cost[color]}</text>
-          </g>
-        `)
-        .join('');
-      const renderCard = (card: CardDTO, x: number, y: number, widthPx = 148, heightPx = 196): string => {
-        const stroke = card.is_placeholder ? '#a2abb9' : '#0f1320';
-        const fill = card.is_placeholder ? '#c9cfd8' : '#f3efe4';
-        const banner = card.is_placeholder ? '#d9dee6' : colorMap[card.bonus_color];
-        const label = card.is_placeholder ? '?' : `${card.points}`;
-        return `
-          <g transform="translate(${x} ${y})">
-            <rect x="0" y="0" width="${widthPx}" height="${heightPx}" rx="14" fill="${fill}" stroke="${stroke}" stroke-width="3" />
-            <rect x="0" y="0" width="${widthPx}" height="42" rx="14" fill="${banner}" />
-            <text x="18" y="30" font-size="28" font-weight="900" fill="${card.is_placeholder || card.bonus_color === 'white' ? '#1f2430' : '#ffffff'}">${label}</text>
-            ${card.is_placeholder ? '<text x="74" y="112" text-anchor="middle" font-size="72" font-weight="800" fill="#6b7380">?</text>' : renderCostRow(card.cost, 18, 150)}
-          </g>
-        `;
-      };
-      const renderNoble = (noble: NobleDTO | null, x: number, y: number): string => {
-        if (!noble) {
-          return `<rect x="${x}" y="${y}" width="132" height="100" rx="14" fill="#242a33" opacity="0.35" />`;
-        }
-        return `
-          <g transform="translate(${x} ${y})">
-            <rect x="0" y="0" width="132" height="100" rx="14" fill="#ece2c6" stroke="#5f4b2b" stroke-width="3" />
-            <text x="18" y="28" font-size="26" font-weight="900" fill="#2b2111">${noble.points}</text>
-            ${renderCostRow(noble.requirements, 14, 52)}
-          </g>
-        `;
-      };
-      const renderPlayer = (player: BoardStateDTO['players'][number], x: number, y: number): string => `
-        <g transform="translate(${x} ${y})">
-          <rect x="0" y="0" width="360" height="410" rx="18" fill="${panelFill}" stroke="rgba(255,255,255,0.08)" stroke-width="2" />
-          <text x="24" y="38" font-size="28" font-weight="800" fill="${textLight}">${escapeXml(player.display_name)}</text>
-          <text x="300" y="38" font-size="24" font-weight="800" fill="${textLight}">${player.points}★</text>
-          <text x="24" y="76" font-size="18" font-weight="700" fill="${textMuted}">Tokens</text>
-          ${tokenOrder.map((color, idx) => renderToken(18 + (idx % 3) * 106, 94 + Math.floor(idx / 3) * 76, color, player.tokens[color])).join('')}
-          <text x="24" y="264" font-size="18" font-weight="700" fill="${textMuted}">Bonuses</text>
-          ${reqOrder.map((color, idx) => renderToken(18 + idx * 66, 280, color, player.bonuses[color])).join('')}
-          <text x="24" y="388" font-size="18" font-weight="700" fill="${textMuted}">Reserved ${player.reserved_total}/3</text>
-          ${Array.from({ length: 3 }, (_, idx) => renderCard(
-            player.reserved_public.find((card) => card.slot === idx) ?? {
-              points: 0,
-              bonus_color: 'white',
-              cost: { white: 0, blue: 0, green: 0, red: 0, black: 0 },
-              source: 'reserved_public',
-              slot: idx,
-              is_placeholder: true,
-            },
-            18 + idx * 112,
-            404,
-            100,
-            132,
-          )).join('')}
-        </g>
-      `;
-
-      const nobleBySlot = new Map((displayBoard.nobles ?? []).map((noble) => [noble.slot ?? -1, noble]));
-      const svg = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-          <rect width="${width}" height="${height}" fill="${pageBackground}" />
-          ${renderPlayer(displayBoard.players[0], 40, 70)}
-          ${renderPlayer(displayBoard.players[1], 40, 560)}
-          <g transform="translate(440 60)">
-            <rect x="0" y="0" width="1380" height="920" rx="26" fill="${boardFill}" />
-            <g transform="translate(84 44)">
-              ${[0, 1, 2].map((slot) => renderNoble(nobleBySlot.get(slot) ?? null, slot * 170, 0)).join('')}
-            </g>
-            <g transform="translate(680 56)">
-              ${tokenOrder.map((color, idx) => renderToken(idx * 98, 0, color, displayBoard.bank[color])).join('')}
-            </g>
-            ${displayBoard.tiers.map((tier, rowIdx) => `
-              <g transform="translate(72 ${188 + rowIdx * 238})">
-                <rect x="0" y="0" width="118" height="196" rx="18" fill="#20252d" />
-                <text x="59" y="82" text-anchor="middle" font-size="52" font-weight="900" fill="${textLight}">${tier.tier}</text>
-                <text x="59" y="126" text-anchor="middle" font-size="26" font-weight="700" fill="${textMuted}">${tier.deck_count}</text>
-                ${Array.from({ length: 4 }, (_, slot) => renderCard(
-                  tier.cards.find((card) => card.slot === slot) ?? {
-                    points: 0,
-                    bonus_color: 'white',
-                    cost: { white: 0, blue: 0, green: 0, red: 0, black: 0 },
-                    source: 'faceup',
-                    tier: tier.tier,
-                    slot,
-                    is_placeholder: true,
-                  },
-                  156 + slot * 272,
-                  0,
-                )).join('')}
-              </g>
-            `).join('')}
-          </g>
-        </svg>
-      `;
-
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-
-      const downloadBlob = (blob: Blob, extension: 'png' | 'svg'): void => {
-        const downloadUrl = URL.createObjectURL(blob);
-        try {
-          const anchor = document.createElement('a');
-          anchor.href = downloadUrl;
-          anchor.download = `splendor-board-${timestamp}.${extension}`;
-          anchor.click();
-        } finally {
-          URL.revokeObjectURL(downloadUrl);
-        }
-      };
-
-      try {
-        const scale = Math.max(2, Math.ceil(window.devicePixelRatio || 1));
-        const canvas = document.createElement('canvas');
-        canvas.width = width * scale;
-        canvas.height = height * scale;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          throw new Error('Canvas export is unavailable.');
-        }
-        ctx.scale(scale, scale);
-
-        const drawRoundedRect = (
-          x: number,
-          y: number,
-          rectWidth: number,
-          rectHeight: number,
-          radius: number,
-          fill: string,
-          stroke?: string,
-          strokeWidth = 1,
-        ): void => {
-          const safeRadius = Math.min(radius, rectWidth / 2, rectHeight / 2);
-          ctx.beginPath();
-          ctx.moveTo(x + safeRadius, y);
-          ctx.lineTo(x + rectWidth - safeRadius, y);
-          ctx.quadraticCurveTo(x + rectWidth, y, x + rectWidth, y + safeRadius);
-          ctx.lineTo(x + rectWidth, y + rectHeight - safeRadius);
-          ctx.quadraticCurveTo(x + rectWidth, y + rectHeight, x + rectWidth - safeRadius, y + rectHeight);
-          ctx.lineTo(x + safeRadius, y + rectHeight);
-          ctx.quadraticCurveTo(x, y + rectHeight, x, y + rectHeight - safeRadius);
-          ctx.lineTo(x, y + safeRadius);
-          ctx.quadraticCurveTo(x, y, x + safeRadius, y);
-          ctx.closePath();
-          ctx.fillStyle = fill;
-          ctx.fill();
-          if (stroke) {
-            ctx.strokeStyle = stroke;
-            ctx.lineWidth = strokeWidth;
-            ctx.stroke();
-          }
-        };
-
-        const drawText = (
-          text: string,
-          x: number,
-          y: number,
-          font: string,
-          fill: string,
-          align: CanvasTextAlign = 'left',
-        ): void => {
-          ctx.font = font;
-          ctx.fillStyle = fill;
-          ctx.textAlign = align;
-          ctx.textBaseline = 'alphabetic';
-          ctx.fillText(text, x, y);
-        };
-
-        const drawToken = (x: number, y: number, color: keyof TokenCountsDTO, count: number): void => {
-          ctx.beginPath();
-          ctx.arc(x + 30, y + 30, 24, 0, Math.PI * 2);
-          ctx.fillStyle = colorMap[color];
-          ctx.fill();
-          ctx.strokeStyle = '#1e223080';
-          ctx.lineWidth = 3;
-          ctx.stroke();
-          drawText(
-            String(count),
-            x + 30,
-            y + 39,
-            '800 26px Arial',
-            color === 'white' || color === 'gold' ? '#1f2430' : '#ffffff',
-            'center',
-          );
-        };
-
-        const drawCostRow = (cost: ColorCountsDTO, startX: number, y: number): void => {
-          reqOrder
-            .filter((color) => cost[color] > 0)
-            .forEach((color, idx) => {
-              const cx = startX + idx * 34 + 14;
-              const cy = y + 14;
-              ctx.beginPath();
-              ctx.arc(cx, cy, 14, 0, Math.PI * 2);
-              ctx.fillStyle = colorMap[color];
-              ctx.fill();
-              ctx.strokeStyle = '#1e223080';
-              ctx.lineWidth = 2;
-              ctx.stroke();
-              drawText(String(cost[color]), cx, y + 19, '800 14px Arial', '#ffffff', 'center');
-            });
-        };
-
-        const drawCard = (card: CardDTO, x: number, y: number, widthPx = 148, heightPx = 196): void => {
-          const stroke = card.is_placeholder ? '#a2abb9' : '#0f1320';
-          const fill = card.is_placeholder ? '#c9cfd8' : '#f3efe4';
-          const banner = card.is_placeholder ? '#d9dee6' : colorMap[card.bonus_color];
-          const valueColor = card.is_placeholder || card.bonus_color === 'white' ? '#1f2430' : '#ffffff';
-          drawRoundedRect(x, y, widthPx, heightPx, 14, fill, stroke, 3);
-          drawRoundedRect(x, y, widthPx, 42, 14, banner);
-          ctx.fillStyle = fill;
-          ctx.fillRect(x, y + 14, widthPx, 28);
-          drawText(card.is_placeholder ? '?' : String(card.points), x + 18, y + 30, '900 28px Arial', valueColor);
-          if (card.is_placeholder) {
-            drawText('?', x + widthPx / 2, y + 122, '800 72px Arial', '#6b7380', 'center');
-          } else {
-            drawCostRow(card.cost, x + 18, y + 150);
-          }
-        };
-
-        const drawNoble = (noble: NobleDTO | null, x: number, y: number): void => {
-          if (!noble) {
-            ctx.save();
-            ctx.globalAlpha = 0.35;
-            drawRoundedRect(x, y, 132, 100, 14, '#242a33');
-            ctx.restore();
-            return;
-          }
-          drawRoundedRect(x, y, 132, 100, 14, '#ece2c6', '#5f4b2b', 3);
-          drawText(String(noble.points), x + 18, y + 28, '900 26px Arial', '#2b2111');
-          drawCostRow(noble.requirements, x + 14, y + 52);
-        };
-
-        const drawPlayer = (player: BoardStateDTO['players'][number], x: number, y: number): void => {
-          drawRoundedRect(x, y, 360, 560, 18, panelFill, 'rgba(255,255,255,0.08)', 2);
-          drawText(player.display_name, x + 24, y + 38, '800 28px Arial', textLight);
-          drawText(`${player.points}*`, x + 320, y + 38, '800 24px Arial', textLight, 'right');
-          drawText('Tokens', x + 24, y + 76, '700 18px Arial', textMuted);
-          tokenOrder.forEach((color, idx) => {
-            drawToken(x + 18 + (idx % 3) * 106, y + 94 + Math.floor(idx / 3) * 76, color, player.tokens[color]);
-          });
-          drawText('Bonuses', x + 24, y + 264, '700 18px Arial', textMuted);
-          reqOrder.forEach((color, idx) => {
-            drawToken(x + 18 + idx * 66, y + 280, color, player.bonuses[color]);
-          });
-          drawText(`Reserved ${player.reserved_total}/3`, x + 24, y + 388, '700 18px Arial', textMuted);
-          Array.from({ length: 3 }, (_, idx) => {
-            const fallbackCard: CardDTO = {
-              points: 0,
-              bonus_color: 'white',
-              cost: { white: 0, blue: 0, green: 0, red: 0, black: 0 },
-              source: 'reserved_public',
-              slot: idx,
-              is_placeholder: true,
-            };
-            const card = player.reserved_public.find((item) => item.slot === idx) ?? fallbackCard;
-            drawCard(card, x + 18 + idx * 112, y + 404, 100, 132);
-            return null;
-          });
-        };
-
-        ctx.fillStyle = pageBackground;
-        ctx.fillRect(0, 0, width, height);
-        drawPlayer(displayBoard.players[0], 40, 70);
-        drawPlayer(displayBoard.players[1], 40, 560);
-        drawRoundedRect(440, 60, 1380, 920, 26, boardFill);
-
-        [0, 1, 2].forEach((slot) => {
-          drawNoble(nobleBySlot.get(slot) ?? null, 524 + slot * 170, 104);
-        });
-        tokenOrder.forEach((color, idx) => {
-          drawToken(1120 + idx * 98, 116, color, displayBoard.bank[color]);
-        });
-        displayBoard.tiers.forEach((tier, rowIdx) => {
-          const rowX = 512;
-          const rowY = 248 + rowIdx * 238;
-          drawRoundedRect(rowX, rowY, 118, 196, 18, '#20252d');
-          drawText(String(tier.tier), rowX + 59, rowY + 82, '900 52px Arial', textLight, 'center');
-          drawText(String(tier.deck_count), rowX + 59, rowY + 126, '700 26px Arial', textMuted, 'center');
-          Array.from({ length: 4 }, (_, slot) => {
-            const fallbackCard: CardDTO = {
-              points: 0,
-              bonus_color: 'white',
-              cost: { white: 0, blue: 0, green: 0, red: 0, black: 0 },
-              source: 'faceup',
-              tier: tier.tier,
-              slot,
-              is_placeholder: true,
-            };
-            const card = tier.cards.find((item) => item.slot === slot) ?? fallbackCard;
-            drawCard(card, rowX + 156 + slot * 272, rowY, 148, 196);
-            return null;
-          });
-        });
-
-        const pngBlob = await new Promise<Blob>((resolve, reject) => {
-          canvas.toBlob((blob) => {
-            if (blob) {
-              resolve(blob);
-            } else {
-              reject(new Error('Failed to encode board image.'));
-            }
-          }, 'image/png');
-        });
-        downloadBlob(pngBlob, 'png');
-      } catch {
-        const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
-        downloadBlob(svgBlob, 'svg');
-      }
+      await downloadBoardImage(displayBoard);
     } catch (err) {
       setError((err as Error).message);
     }
