@@ -3493,93 +3493,90 @@ const displayedP0EvalRef = useRef<number | null>(null);
             <section>
               <h3>What is AhinLendor?</h3>
               <p>
-                AhinLendor is an AI for the board game Splendor, built using a complete AlphaZero-style
-                architecture. It learns entirely through self-play, combining a policy-value neural network with
-                Monte Carlo Tree Search (MCTS) to discover strategies without any human game data.
+                AhinLendor is an AI for the board game <strong>Splendor</strong>, built using a complete 
+                {" "}<strong>AlphaZero-style</strong> architecture. It learns entirely through self-play,
+                combining a policy-value neural network with Monte Carlo Tree Search (MCTS)
+                to discover strategies without any human game data.
               </p>
               <p>
-                In live competition, AhinLendor reached Rank 1 on the spendee.mattle.online leaderboard. It has also
-                won exhibition matches against two of the top-ranked human players on Board Game Arena: seed seed
-                (zuroti) and FourDimensional.
+                In live competition, AhinLendor reached <strong>Rank 1</strong> on the {" "}
+                <a href="https://spendee.mattle.online/" target="_blank" rel="noreferrer">spendee.mattle.online</a>
+                {" "} leaderboard. It has also won exhibition matches against two of the <strong>top-ranked human players</strong> on 
+                {" "} <a href="https://boardgamearena.com/" target="_blank" rel="noreferrer">BoardGameArena</a>: seed
+                seed (zuroti) and FourDimensional.
               </p>
+              <img src="/leaderboard-rank1.png" alt="AhinLendor leaderboard rank 1" className="about-image" />
             </section>
             <section>
               <h3>Specifications</h3>
               <p>
-                When AhinLendor reached Rank 1 on Spendee, it competed under a 5 minutes + 10 seconds per action time
-                control. For each move, the engine performed 70,000 MCTS simulations.
+                When AhinLendor reached <strong>Rank 1</strong> on Spendee, it competed under a {" "}
+                <strong>5 minutes + 10 seconds per action</strong> time control. For each move, the engine performed {" "}
+                <strong>70,000 MCTS simulations</strong>.
               </p>
               <p>
-                Later versions improved the search with 200,000 MCTS iterations, 20,000 bootstrap iterations, and
-                batching 64 leaf evaluations at a time. On a MacBook M2, this version took about 20 seconds per move.
+                Later versions improved the search with <strong>250,000 MCTS simlulations</strong>, {" "}
+                <strong>20,000 bootstrap iterations</strong>, and batching <strong>64 leaf evaluations</strong> at a time.
+                On a MacBook M2, this version took about <strong>20 seconds per move</strong>.
               </p>
             </section>
             <section>
               <h3>Reducing the Action Space</h3>
               <p>
-                One of the first design challenges was defining a practical action space. Token collection and token
-                returns can create many take-and-return combinations, and treating every card in the game as a separate
-                buy or reserve action quickly inflates the policy space. One master's thesis, Creating an AI Opponent
-                with Super-Human Performance for Splendor by Jonatan Simonsson, represents the game with 371 possible
-                actions.
+                One of the first design challenges was defining the <strong>action space</strong>—the set of actions the
+                AI can choose from at each move. In Splendor, token collection and returns create many valid
+                combinations, and treating every card as a separate buy or reserve action quickly inflates the policy
+                space. For example, Jonatan Simonsson's master's thesis, <em>Creating an AI Opponent with Super-Human
+                Performance for Splendor</em>, uses <strong>371 possible actions</strong>.
               </p>
               <p>
-                AhinLendor instead models the game around decision types rather than every possible outcome. Token
-                collection and token returns are separate decisions, while buy and reserve actions are limited to cards
-                that are currently available: 12 buy actions and 15 reserve actions. This reduces the policy space to
-                69 actions while preserving the full game rules.
-              </p>
-            </section>
-            <section>
-              <h3>Measuring Improvement</h3>
-              <p>
-                One of the biggest challenges during development was determining whether the neural network was actually
-                getting stronger. Policy loss, value loss, action top-1 accuracy, and value sign accuracy were useful
-                diagnostics, but lower loss did not necessarily mean a stronger model. A low policy loss could simply
-                mean the model was overfitting to the self-play games it had already seen.
-              </p>
-              <p>
-                AhinLendor uses a continuous evaluation pipeline instead. Every newly trained model plays a series of
-                games against the current champion, and only models that consistently achieve a higher win rate are
-                promoted. This head-to-head evaluation became the primary measure of progress.
+                AhinLendor greatly reduces this action space through several design choices. When
+                returning tokens, the AI chooses <strong>one token at a time</strong> in a separate return phase instead
+                of selecting an entire return combination at once, dramatically reducing the number of actions. Buy and
+                reserve actions are also limited to the cards currently available on the board (<strong>12 buy actions</strong> {" "}
+                and <strong>15 reserve actions</strong>). Together, these design choices reduce the policy space to
+                {" "} <strong>69 actions</strong> while preserving the full game rules.
               </p>
             </section>
             <section>
               <h3>Bootstrap Search</h3>
               <p>
-                A weakness emerged while analyzing games against seed seed, the former Rank 1 player on Board Game
-                Arena. Seed seed favored slow, long-term engine-building plans, while AhinLendor often preferred moves
-                that looked immediately stronger. In one game, the human correctly identified that buying an unassuming
-                Tier 1 card early would determine the outcome many turns later, but the AI largely ignored it.
+                A weakness emerged while analyzing games against <strong>seed seed</strong>, the former Rank 1 player on
+                BoardGameArena. <strong>seed seed</strong> favored <strong>long-term</strong> engine-building plans, while
+                AhinLendor often preferred moves that looked immediately stronger. In one game, the human correctly
+                identified that buying an unassuming <strong>Tier 1</strong> card early would determine the outcome many
+                turns later, but the AI largely ignored it.
               </p>
               <p>
-                The problem came from the value network. Because MCTS naturally focuses on moves that already appear
-                promising, actions that are initially underestimated receive very little exploration. Bootstrap MCTS
-                addresses this by performing a fixed number of simulations from every legal move one ply ahead before
-                normal tree search begins. This gives each candidate meaningful exploration before standard MCTS
-                allocates simulations according to its search policy.
+                The problem came from the value network. Because <strong>MCTS</strong> naturally focuses on moves that
+                already appear promising, actions that are initially underestimated receive very little exploration.
+                <strong>Bootstrap MCTS</strong> addresses this by performing a fixed number of simulations from every
+                legal move one ply ahead before normal tree search begins. This gives each candidate meaningful
+                exploration before standard MCTS allocates simulations according to its search policy.
               </p>
             </section>
             <section>
               <h3>Developer Notes</h3>
               <p>
-                Reaching Rank 1 on Spendee initially suggested that AhinLendor had reached a superhuman level of play.
-                That assumption changed after playing against seed seed, who narrowly won their first match 4-3 despite
-                the engine's top ranking. Later versions won the rematch 6-0, but those games showed that achieving the
-                highest online rating does not mean every strategic weakness has been solved.
+                Reaching <strong>Rank 1</strong> on Spendee initially suggested that AhinLendor had reached a 
+                <strong>superhuman</strong> level of play. That assumption changed after playing against seed seed, who
+                narrowly won their first match <strong>4-3</strong> despite the engine's top ranking. Later versions won
+                the rematch <strong>6-0</strong>, but those games showed that achieving the highest online rating does
+                not mean every strategic weakness has been solved.
               </p>
               <p>
-                Splendor's stochastic card reveals make evaluation harder than in perfect-information games. Even the
-                objectively best move can become worse if an unfavorable card appears afterward, so the value function
-                can never be perfectly accurate. Deeper search can compensate, but neural-network inference remains the
-                computational bottleneck. An NNUE-style evaluator could enable much deeper search and may reduce some
-                remaining weaknesses.
+                Splendor's <strong>stochastic card reveals</strong> make evaluation harder than in 
+                <strong>perfect-information</strong> games. Even the objectively best move can become worse if an
+                unfavorable card appears afterward, so the <strong>value function</strong> can never be perfectly
+                accurate. Deeper search can compensate, but <strong>neural-network inference</strong> remains the
+                computational bottleneck. An <strong>NNUE-style evaluator</strong> could enable much deeper search and may
+                reduce some remaining weaknesses.
               </p>
               <p>
-                Another open problem is reasoning about an opponent's hidden reserved card. The current engine samples a
-                random unseen card during each MCTS simulation, which is unbiased but does not model clues from the
-                opponent's gem collection or long-term plan. An explicit belief model over hidden cards remains a future
-                research direction.
+                Another open problem is reasoning about an opponent's <strong>hidden reserved card</strong>. The current
+                engine samples a random unseen card during each <strong>MCTS simulation</strong>, which is unbiased but does
+                not model clues from the opponent's gem collection or long-term plan. An explicit <strong>belief model</strong>
+                over hidden cards remains a future research direction.
               </p>
             </section>
           </div>

@@ -162,6 +162,12 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   margin: 0;
   max-width: 760px;
 }
+.about-image {
+  height: auto;
+  margin-top: 6px;
+  max-width: min(100%, 760px);
+  width: 100%;
+}
 label { color: var(--text-secondary); display: flex; flex-direction: column; gap: 7px; font-size: 13px; font-weight: 550; }
 input, select {
   background: var(--surface);

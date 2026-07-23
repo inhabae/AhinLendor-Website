@@ -73,7 +73,7 @@ function CardActionLabel({ verb, card, hideVerb = false }: { verb: 'BUY' | 'RESE
   if (!card) {
     return hideVerb ? null : <span className="action-verb">{verb}</span>;
   }
-  const toneClass = `action-tone token-${card.bonus_color}`;
+  const toneClass = `token-${card.bonus_color}`;
   const entries = costEntries(card);
   return (
     <>
@@ -82,7 +82,7 @@ function CardActionLabel({ verb, card, hideVerb = false }: { verb: 'BUY' | 'RESE
         <span className="action-card-points">{card.points}</span>
         <span className={`action-group action-group-card-reqs ${toneClass}`}>
         {entries.map(({ color, count }) => (
-          <span key={`${verb}-${color}-${count}`} className="action-cost action-cost-inline">
+          <span key={`${verb}-${color}-${count}`} className="action-cost">
             <GemChip color={color} count={count} />
           </span>
         ))}
@@ -135,7 +135,7 @@ function NobleActionLabel({ noble, slot }: { noble: NobleDTO | null; slot: numbe
       <span className="action-verb">NOBLE</span>
       <span className="action-group action-group-card-reqs">
         {reqs.map((color) => (
-          <span key={`noble-${slot ?? 0}-${color}`} className="action-cost action-cost-inline">
+          <span key={`noble-${slot ?? 0}-${color}`} className="action-cost">
             <SquareGemChip color={color} />
             <span>{noble.requirements[color]}</span>
           </span>
