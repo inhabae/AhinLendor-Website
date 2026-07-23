@@ -28,7 +28,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     AHINLENDOR_CHECKPOINT_DIR=/data/checkpoints \
     AHINLENDOR_SELFPLAY_DIR=/data/selfplay \
-    AHINLENDOR_LIVE_SAVE_PATH=/data/live/current.json \
     AHINLENDOR_WEB_DIST_DIR=/app/dist
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
@@ -39,7 +38,7 @@ COPY --from=engine-builder /wheels /wheels
 RUN python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch \
     && python -m pip install --no-cache-dir /wheels/*.whl .
 COPY --from=frontend /src/dist ./dist
-RUN mkdir -p /data/checkpoints /data/selfplay /data/live
+RUN mkdir -p /data/checkpoints /data/selfplay
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"

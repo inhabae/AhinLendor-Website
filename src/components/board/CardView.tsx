@@ -8,7 +8,7 @@ export function CardView(props: {
   showModel?: boolean;
   onClick?: () => void;
 }) {
-  const { card, onClick } = props;
+  const { card, showMcts = false, showModel = false, onClick } = props;
   const isPrivate = card.source === 'reserved_private';
   const isPlaceholder = card.is_placeholder === true;
   const isHiddenReservedCard = isPrivate && isPlaceholder;
@@ -20,6 +20,8 @@ export function CardView(props: {
   return (
     <article
       className={`card-view card-${card.bonus_color} ${isPrivate ? 'card-private' : ''} ${isPlaceholder ? 'card-placeholder' : ''} ${isHiddenReservedCard ? 'card-hidden-reserved' : ''} ${hiddenReservedTier != null ? `card-hidden-reserved-tier-${hiddenReservedTier}` : ''} ${onClick ? 'card-clickable' : ''}`}
+      data-engine-mcts={showMcts ? 'true' : undefined}
+      data-engine-model={showModel ? 'true' : undefined}
       aria-label={summary}
       onClick={onClick}
       role={onClick ? 'button' : undefined}

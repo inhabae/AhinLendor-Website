@@ -3,9 +3,14 @@ import { ColorCountsDTO, TokenCountsDTO } from '../../types';
 type TokenKey = keyof TokenCountsDTO;
 
 export function TokenPill(props: { color: TokenKey; count: number; showMcts?: boolean; showModel?: boolean }) {
-  const { color, count } = props;
+  const { color, count, showMcts = false, showModel = false } = props;
   return (
-    <div className={`token-pill token-${color} ${count === 0 ? 'is-zero-count' : ''}`} aria-label={`${color} token count ${count}`}>
+    <div
+      className={`token-pill token-${color} ${count === 0 ? 'is-zero-count' : ''}`}
+      data-engine-mcts={showMcts ? 'true' : undefined}
+      data-engine-model={showModel ? 'true' : undefined}
+      aria-label={`${color} token count ${count}`}
+    >
       <span className="token-pill-count">{count}</span>
     </div>
   );

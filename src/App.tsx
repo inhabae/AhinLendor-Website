@@ -1,6 +1,5 @@
 import { ReactElement, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  IconActivityHeartbeat,
   IconChartBar,
   IconHome,
   IconInfoCircle,
@@ -18,7 +17,6 @@ import {
   EngineThinkRequest,
   EngineThinkResponse,
   GameSnapshotDTO,
-  LiveSaveStatusDTO,
   MoveLogEntryDTO,
   NobleDTO,
   PlayerMoveResponse,
@@ -34,19 +32,18 @@ import { NobleView } from './components/board/NobleView';
 import { BoardViewport } from './components/board/BoardViewport';
 
 type UiStatus = 'IDLE' | 'WAITING_ENGINE' | 'WAITING_PLAYER' | 'WAITING_REVEAL' | 'GAME_OVER';
-type HomeView = 'HOME' | 'QUICK' | 'ANALYSIS' | 'LIVE' | 'ABOUT';
+type HomeView = 'HOME' | 'QUICK' | 'ANALYSIS' | 'ABOUT';
 type AnalysisPanelTab = 'ANALYSIS' | 'MOVES';
 const COLOR_ORDER: CatalogCardDTO['bonus_color'][] = ['white', 'blue', 'green', 'red', 'black'];
 
 const POLL_MS = 400;
-const LIVE_POLL_MS = 1000;
-const LIVE_SEARCH_MAX_SIMULATIONS = 1_000_000;
 const DEFAULT_DEEP_ANALYSIS_SIMULATIONS = 50_000;
 const DEFAULT_GPU_EVAL_BATCH_SIZE = 64;
 const MAX_EVAL_BATCH_SIZE = 64;
 const DEFAULT_ALPHABETA_DEPTH = 3;
-const DEFAULT_SEARCH_SIMULATIONS = 150_000;
-const DEFAULT_BOOTSTRAP_SIMULATIONS_PER_ACTION = 2_000;
+const DEFAULT_SEARCH_SIMULATIONS = 200_000;
+const DEFAULT_BOOTSTRAP_SIMULATIONS_PER_ACTION = 20_000;
+const MAX_SEARCH_SIMULATIONS = 1_000_000;
 
 function analysisPublishInterval(totalSimulations: number): number {
   const normalized = Number.isInteger(totalSimulations) && totalSimulations >= 1 ? totalSimulations : 1;
@@ -139,16 +136,14 @@ interface DeepAnalysisEntry {
 
 type DeepAnalysisSearchResult = NonNullable<EngineJobStatusDTO['result']>;
 
-function UiIcon({ name }: { name: 'home' | 'play' | 'analysis' | 'live' | 'about' }) {
+function UiIcon({ name }: { name: 'home' | 'play' | 'analysis' | 'about' }) {
   const Icon = name === 'home'
     ? IconHome
     : name === 'play'
       ? IconPlayerPlay
       : name === 'analysis'
         ? IconChartBar
-        : name === 'about'
-          ? IconInfoCircle
-          : IconActivityHeartbeat;
+        : IconInfoCircle;
   return <Icon className="ui-icon" size={17} stroke={1.75} aria-hidden="true" />;
 }
 
@@ -156,14 +151,13 @@ const VIEW_PATHS: Record<HomeView, string> = {
   HOME: '/',
   QUICK: '/quick',
   ANALYSIS: '/analysis',
-  LIVE: '/live',
   ABOUT: '/about',
 };
 
 function homeViewFromPath(pathname: string): HomeView {
   if (pathname.startsWith('/quick')) return 'QUICK';
   if (pathname.startsWith('/analysis')) return 'ANALYSIS';
-  if (pathname.startsWith('/about') || pathname.startsWith('/live')) return 'ABOUT';
+  if (pathname.startsWith('/about')) return 'ABOUT';
   return 'HOME';
 }
 
@@ -324,7 +318,6 @@ export function App() {
   const [variationBranches, setVariationBranches] = useState<VariationBranch[]>([]);
   const [jobStatus, setJobStatus] = useState<EngineJobStatusDTO | null>(null);
   const [uiStatus, setUiStatus] = useState<UiStatus>('IDLE');
-  const [, setLiveSaveStatus] = useState<LiveSaveStatusDTO | null>(null);
 const [displayedP0EvalValue, setDisplayedP0EvalValue] = useState<number | null>(null);
   const [analysisPanelTab, setAnalysisPanelTab] = useState<AnalysisPanelTab>('ANALYSIS');
   const [deepAnalysisBySnapshot, setDeepAnalysisBySnapshot] = useState<Record<string, DeepAnalysisEntry>>({});
@@ -342,7 +335,6 @@ const [displayedP0EvalValue, setDisplayedP0EvalValue] = useState<number | null>(
   }, [snapshot]);
 
   const pollRef = useRef<number | null>(null);
-  const livePollRef = useRef<number | null>(null);
   const activeJobIdRef = useRef<string | null>(null);
   const activeVariationBranchIdRef = useRef<number | null>(null);
   const variationBranchIdCounterRef = useRef<number>(1);
@@ -367,7 +359,6 @@ const displayedP0EvalRef = useRef<number | null>(null);
   const isQuickGameView = homeView === 'QUICK';
   const showAnalysisUi = !isQuickGameView;
   const activePanelTab: AnalysisPanelTab = showAnalysisUi ? analysisPanelTab : 'MOVES';
-  const lastLiveSaveUpdatedAtRef = useRef<string | null>(null);
   const lastAutoAnalyzeKeyRef = useRef<string | null>(null);
   const lastSnapshotSearchKeyRef = useRef<string | null>(null);
   const autoAnalyzeOnNavigation = showBoardAnalysis;
@@ -653,9 +644,6 @@ const displayedP0EvalRef = useRef<number | null>(null);
       if (pollRef.current !== null) {
         window.clearInterval(pollRef.current);
       }
-      if (livePollRef.current !== null) {
-        window.clearInterval(livePollRef.current);
-      }
       if (evalAnimationFrameRef.current !== null) {
         window.cancelAnimationFrame(evalAnimationFrameRef.current);
       }
@@ -705,13 +693,6 @@ const displayedP0EvalRef = useRef<number | null>(null);
       pollRef.current = null;
     }
     activeJobIdRef.current = null;
-  }
-
-  function clearLivePolling(): void {
-    if (livePollRef.current !== null) {
-      window.clearInterval(livePollRef.current);
-      livePollRef.current = null;
-    }
   }
 
   function deriveUiStatus(nextSnapshot: GameSnapshotDTO): UiStatus {
@@ -971,11 +952,9 @@ const displayedP0EvalRef = useRef<number | null>(null);
         : DEFAULT_BOOTSTRAP_SIMULATIONS_PER_ACTION;
     const supportsProgressiveTreeUpdates =
       activeSearchType === 'mcts' || activeSearchType === 'mcts_gpu' || activeSearchType === 'mcts_bootstrap';
-    const useProgressiveSearch = supportsProgressiveTreeUpdates && (homeView === 'LIVE' || homeView === 'ANALYSIS');
-    const totalSearchBudget = homeView === 'LIVE' ? LIVE_SEARCH_MAX_SIMULATIONS : nextNumSimulations;
-    const publishInterval = homeView === 'LIVE'
-      ? nextNumSimulations
-      : analysisPublishInterval(nextNumSimulations);
+    const useProgressiveSearch = supportsProgressiveTreeUpdates && homeView === 'ANALYSIS';
+    const totalSearchBudget = nextNumSimulations;
+    const publishInterval = analysisPublishInterval(nextNumSimulations);
 
     if (activeSearchType === 'alphabeta') {
       return {
@@ -1114,7 +1093,6 @@ const displayedP0EvalRef = useRef<number | null>(null);
   function resetGameViewState(): void {
     setError(null);
     clearPolling();
-    clearLivePolling();
     setJobStatus(null);
     setSnapshot(null);
     setLoadedMoveLog(null);
@@ -1146,8 +1124,6 @@ const displayedP0EvalRef = useRef<number | null>(null);
     resetGameViewState();
     setRevealSelections({});
     setActiveRevealKey(null);
-    setLiveSaveStatus(null);
-    lastLiveSaveUpdatedAtRef.current = null;
     setHomeView('ABOUT');
   }
 
@@ -1530,8 +1506,6 @@ const displayedP0EvalRef = useRef<number | null>(null);
       setError((err as Error).message);
     }
   }
-  void onPlayerMove;
-
   async function onSelectQuickAction(actionIdx: number): Promise<void> {
     if (!snapshot) {
       return;
@@ -1581,10 +1555,6 @@ const displayedP0EvalRef = useRef<number | null>(null);
     });
   }
 
-  async function onSelectLiveAction(_actionIdx: number): Promise<void> {
-    return;
-  }
-
   async function onSelectModeAction(actionIdx: number): Promise<void> {
     if (homeView === 'QUICK') {
       await onSelectQuickAction(actionIdx);
@@ -1592,10 +1562,6 @@ const displayedP0EvalRef = useRef<number | null>(null);
     }
     if (homeView === 'ANALYSIS') {
       await onSelectAnalysisAction(actionIdx);
-      return;
-    }
-    if (homeView === 'LIVE') {
-      await onSelectLiveAction(actionIdx);
     }
   }
 
@@ -1792,7 +1758,7 @@ const displayedP0EvalRef = useRef<number | null>(null);
     clearActiveVariationSelection();
 
     try {
-      // Appended post-load mainline moves now live in backend snapshot history,
+      // Appended post-load mainline moves now exist in backend snapshot history,
       // so prefer a direct snapshot jump instead of replaying from the tail.
       const directSnapshot = await fetchJSON<GameSnapshotDTO>('/api/game/jump-to-snapshot', {
         method: 'POST',
@@ -2132,7 +2098,10 @@ const displayedP0EvalRef = useRef<number | null>(null);
         return next;
       });
       setActiveRevealKey(nextRevealKeyInSameGroup(result.snapshot, { zone: 'reserved_card', tier, slot, seat }));
-      await handleSnapshotUpdate(result.snapshot, result.engine_should_move);
+      await handleSnapshotUpdate(
+        result.snapshot,
+        result.engine_should_move || Boolean(result.snapshot.config?.analysis_mode),
+      );
     } catch (err) {
       setError((err as Error).message);
     }
@@ -2227,26 +2196,37 @@ const displayedP0EvalRef = useRef<number | null>(null);
   }
 
   function onModeBoardCardClick(tier: number, slot: number): void {
-    if (homeView === 'ANALYSIS' || homeView === 'LIVE') {
+    if (homeView === 'ANALYSIS') {
       openReveal('faceup_card', tier, slot);
     }
   }
 
   function onModeBoardNobleClick(slot: number): void {
-    if (homeView === 'ANALYSIS' || homeView === 'LIVE') {
+    if (homeView === 'ANALYSIS') {
       openReveal('noble', 0, slot);
     }
   }
 
   function onModeReservedCardClick(seat: Seat, slot: number): void {
-    if (homeView !== 'ANALYSIS' && homeView !== 'LIVE') {
+    if (homeView !== 'ANALYSIS') {
       return;
     }
     const player = displayBoard?.players.find((item) => item.seat === seat);
     const card = player?.reserved_public.find((item) => item.slot === slot);
     const inferredTier = card ? (findCatalogCard(card)?.tier ?? null) : null;
+    const candidateTier = (() => {
+      const candidates = snapshot?.hidden_reserved_reveal_candidates[`${seat}:${slot}`] ?? [];
+      for (const cardId of candidates) {
+        const tier = catalogCards.find((item) => item.id === cardId)?.tier;
+        if (tier != null) {
+          return tier;
+        }
+      }
+      return null;
+    })();
     const tier = card?.tier
       ?? inferredTier
+      ?? candidateTier
       ?? snapshot?.pending_reveals.find((item) => item.zone === 'reserved_card' && item.actor === seat && item.slot === slot)?.tier;
     if (tier != null) {
       openReveal('reserved_card', tier, slot, seat);
@@ -2301,25 +2281,16 @@ const displayedP0EvalRef = useRef<number | null>(null);
       return `${searchTypeLabel(searchType)} • ${searchSimulations.toLocaleString()} per action`;
     }
     if (searchType === 'mcts_bootstrap') {
-      if (homeView === 'LIVE') {
-        return `${searchTypeLabel(searchType)} | publish every ${searchSimulations.toLocaleString()} sims | bootstrap ${searchBootstrapSimulationsPerAction.toLocaleString()} per action | batch ${searchEvalBatchSize.toLocaleString()}`;
-      }
       if (homeView === 'ANALYSIS') {
         return `${searchTypeLabel(searchType)} | ${searchSimulations.toLocaleString()} total sims | bootstrap ${searchBootstrapSimulationsPerAction.toLocaleString()} per action | publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} | batch ${searchEvalBatchSize.toLocaleString()}`;
       }
       return `${searchTypeLabel(searchType)} | ${searchSimulations.toLocaleString()} sims | bootstrap ${searchBootstrapSimulationsPerAction.toLocaleString()} per action | batch ${searchEvalBatchSize.toLocaleString()}`;
     }
     if (searchType === 'mcts_gpu') {
-      if (homeView === 'LIVE') {
-        return `${searchTypeLabel(searchType)} | publish every ${searchSimulations.toLocaleString()} sims | batch ${searchEvalBatchSize.toLocaleString()}`;
-      }
       if (homeView === 'ANALYSIS') {
         return `${searchTypeLabel(searchType)} | ${searchSimulations.toLocaleString()} total sims | publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} | batch ${searchEvalBatchSize.toLocaleString()}`;
       }
       return `${searchTypeLabel(searchType)} | ${searchSimulations.toLocaleString()} sims | batch ${searchEvalBatchSize.toLocaleString()}`;
-    }
-    if (homeView === 'LIVE') {
-      return `${searchTypeLabel(searchType)} • publish every ${searchSimulations.toLocaleString()} sims`;
     }
     if (homeView === 'ANALYSIS' && searchType === 'mcts') {
       return `${searchTypeLabel(searchType)} • ${searchSimulations.toLocaleString()} total sims • publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} sims`;
@@ -2444,7 +2415,7 @@ const displayedP0EvalRef = useRef<number | null>(null);
     }
     return null;
   }, [snapshot, activeRevealKey, isSetupLikeView]);
-  const liveMctsTopAction = useMemo(() => {
+  const mctsTopAction = useMemo(() => {
     const details = jobStatus?.result?.action_details;
     if (!details?.length) return null;
     let best: typeof details[number] | null = null;
@@ -2454,7 +2425,7 @@ const displayedP0EvalRef = useRef<number | null>(null);
     }
     return best;
   }, [jobStatus]);
-  const liveModelTopAction = useMemo(() => {
+  const modelTopAction = useMemo(() => {
     const details = jobStatus?.result?.model_action_details;
     if (!details?.length) return null;
     let best: typeof details[number] | null = null;
@@ -2799,7 +2770,7 @@ const displayedP0EvalRef = useRef<number | null>(null);
     }
     return ids;
   }, [activeReveal, isSetupLikeView, displayBoard, catalogNobles]);
-  const liveAvailableCardIds = useMemo(() => {
+  const availableRevealCardIds = useMemo(() => {
     if (!activeReveal || !snapshot) {
       return new Set<number>();
     }
@@ -2899,7 +2870,7 @@ const displayedP0EvalRef = useRef<number | null>(null);
   ]);
 
   useEffect(() => {
-    const keyboardNavigationEnabled = homeView === 'QUICK' || homeView === 'ANALYSIS' || isSetupLikeView || homeView === 'LIVE';
+    const keyboardNavigationEnabled = homeView === 'QUICK' || homeView === 'ANALYSIS' || isSetupLikeView;
     const activeSnapshot = snapshot;
     if (!activeSnapshot || !keyboardNavigationEnabled || moveLogEntries.length === 0 || isDeepAnalysisRunning) {
       return;
@@ -2983,51 +2954,6 @@ const displayedP0EvalRef = useRef<number | null>(null);
   ]);
 
   useEffect(() => {
-    if (homeView !== 'LIVE') {
-      clearLivePolling();
-      return;
-    }
-
-    async function pollLiveSave(): Promise<void> {
-      try {
-        const status = await fetchJSON<LiveSaveStatusDTO>('/api/game/live-save/status');
-        setLiveSaveStatus(status);
-        if (!status.exists || !status.updated_at) {
-          return;
-        }
-        if (status.updated_at === lastLiveSaveUpdatedAtRef.current) {
-          return;
-        }
-        const nextSnapshot = await fetchJSON<GameSnapshotDTO>('/api/game/live-save/load', {
-          method: 'POST',
-          body: '{}',
-        });
-        const nextSearchKey = snapshotSearchKey(nextSnapshot);
-        const preserveActiveSearch =
-          activeJobIdRef.current !== null &&
-          lastSnapshotSearchKeyRef.current === nextSearchKey;
-        if (!preserveActiveSearch) {
-          clearPolling();
-          setJobStatus(null);
-        }
-        lastLiveSaveUpdatedAtRef.current = status.updated_at;
-        await handleSnapshotUpdate(nextSnapshot, false, null, false, preserveActiveSearch);
-      } catch (err) {
-        setError((err as Error).message);
-      }
-    }
-
-    void pollLiveSave();
-    clearLivePolling();
-    livePollRef.current = window.setInterval(() => {
-      void pollLiveSave();
-    }, LIVE_POLL_MS);
-    return () => {
-      clearLivePolling();
-    };
-  }, [homeView]);
-
-  useEffect(() => {
     if (!hideAllExceptBoard) {
       return;
     }
@@ -3053,7 +2979,7 @@ const displayedP0EvalRef = useRef<number | null>(null);
     };
   }, [hideAllExceptBoard]);
 
-  const isBoardView = (homeView === 'QUICK' || isSetupLikeView || homeView === 'LIVE') && snapshot;
+  const isBoardView = (homeView === 'QUICK' || isSetupLikeView) && snapshot;
 
   async function onSaveBoardImage(): Promise<void> {
     if (!displayBoard) {
@@ -3565,22 +3491,95 @@ const displayedP0EvalRef = useRef<number | null>(null);
           <h2>About AhinLendor</h2>
           <div className="about-content">
             <section>
-              <h3>Development</h3>
+              <h3>What is AhinLendor?</h3>
               <p>
-                AhinLendor is a Splendor analysis and play environment built around an engine-first workflow.
-                This page can describe the training process, search improvements, and the design decisions behind the interface.
+                AhinLendor is an AI for the board game Splendor, built using a complete AlphaZero-style
+                architecture. It learns entirely through self-play, combining a policy-value neural network with
+                Monte Carlo Tree Search (MCTS) to discover strategies without any human game data.
+              </p>
+              <p>
+                In live competition, AhinLendor reached Rank 1 on the spendee.mattle.online leaderboard. It has also
+                won exhibition matches against two of the top-ranked human players on Board Game Arena: seed seed
+                (zuroti) and FourDimensional.
               </p>
             </section>
             <section>
-              <h3>Features</h3>
+              <h3>Specifications</h3>
               <p>
-                Highlight quick play, manual analysis, move ranking, board reconstruction, and engine evaluation tools here.
+                When AhinLendor reached Rank 1 on Spendee, it competed under a 5 minutes + 10 seconds per action time
+                control. For each move, the engine performed 70,000 MCTS simulations.
+              </p>
+              <p>
+                Later versions improved the search with 200,000 MCTS iterations, 20,000 bootstrap iterations, and
+                batching 64 leaf evaluations at a time. On a MacBook M2, this version took about 20 seconds per move.
               </p>
             </section>
             <section>
-              <h3>Engine</h3>
+              <h3>Reducing the Action Space</h3>
               <p>
-                Add notes about MCTS, bootstrap search, model checkpoints, and how AhinLendor evaluates Splendor positions.
+                One of the first design challenges was defining a practical action space. Token collection and token
+                returns can create many take-and-return combinations, and treating every card in the game as a separate
+                buy or reserve action quickly inflates the policy space. One master's thesis, Creating an AI Opponent
+                with Super-Human Performance for Splendor by Jonatan Simonsson, represents the game with 371 possible
+                actions.
+              </p>
+              <p>
+                AhinLendor instead models the game around decision types rather than every possible outcome. Token
+                collection and token returns are separate decisions, while buy and reserve actions are limited to cards
+                that are currently available: 12 buy actions and 15 reserve actions. This reduces the policy space to
+                69 actions while preserving the full game rules.
+              </p>
+            </section>
+            <section>
+              <h3>Measuring Improvement</h3>
+              <p>
+                One of the biggest challenges during development was determining whether the neural network was actually
+                getting stronger. Policy loss, value loss, action top-1 accuracy, and value sign accuracy were useful
+                diagnostics, but lower loss did not necessarily mean a stronger model. A low policy loss could simply
+                mean the model was overfitting to the self-play games it had already seen.
+              </p>
+              <p>
+                AhinLendor uses a continuous evaluation pipeline instead. Every newly trained model plays a series of
+                games against the current champion, and only models that consistently achieve a higher win rate are
+                promoted. This head-to-head evaluation became the primary measure of progress.
+              </p>
+            </section>
+            <section>
+              <h3>Bootstrap Search</h3>
+              <p>
+                A weakness emerged while analyzing games against seed seed, the former Rank 1 player on Board Game
+                Arena. Seed seed favored slow, long-term engine-building plans, while AhinLendor often preferred moves
+                that looked immediately stronger. In one game, the human correctly identified that buying an unassuming
+                Tier 1 card early would determine the outcome many turns later, but the AI largely ignored it.
+              </p>
+              <p>
+                The problem came from the value network. Because MCTS naturally focuses on moves that already appear
+                promising, actions that are initially underestimated receive very little exploration. Bootstrap MCTS
+                addresses this by performing a fixed number of simulations from every legal move one ply ahead before
+                normal tree search begins. This gives each candidate meaningful exploration before standard MCTS
+                allocates simulations according to its search policy.
+              </p>
+            </section>
+            <section>
+              <h3>Developer Notes</h3>
+              <p>
+                Reaching Rank 1 on Spendee initially suggested that AhinLendor had reached a superhuman level of play.
+                That assumption changed after playing against seed seed, who narrowly won their first match 4-3 despite
+                the engine's top ranking. Later versions won the rematch 6-0, but those games showed that achieving the
+                highest online rating does not mean every strategic weakness has been solved.
+              </p>
+              <p>
+                Splendor's stochastic card reveals make evaluation harder than in perfect-information games. Even the
+                objectively best move can become worse if an unfavorable card appears afterward, so the value function
+                can never be perfectly accurate. Deeper search can compensate, but neural-network inference remains the
+                computational bottleneck. An NNUE-style evaluator could enable much deeper search and may reduce some
+                remaining weaknesses.
+              </p>
+              <p>
+                Another open problem is reasoning about an opponent's hidden reserved card. The current engine samples a
+                random unseen card during each MCTS simulation, which is unbiased but does not model clues from the
+                opponent's gem collection or long-term plan. An explicit belief model over hidden cards remains a future
+                research direction.
               </p>
             </section>
           </div>
@@ -3601,8 +3600,8 @@ const displayedP0EvalRef = useRef<number | null>(null);
                   <GameBoard
                     board={displayBoard}
                     isTerminal={snapshot.status !== 'IN_PROGRESS'}
-                    mctsTopAction={liveMctsTopAction}
-                    modelTopAction={liveModelTopAction}
+                    mctsTopAction={mctsTopAction}
+                    modelTopAction={modelTopAction}
                     onCardClick={onModeBoardCardClick}
                     onNobleClick={onModeBoardNobleClick}
                     onReservedCardClick={onModeReservedCardClick}
@@ -3684,11 +3683,11 @@ const displayedP0EvalRef = useRef<number | null>(null);
                             <input
                               type="number"
                               min={1}
-                              max={LIVE_SEARCH_MAX_SIMULATIONS}
+                              max={MAX_SEARCH_SIMULATIONS}
                               value={searchSimulations}
                               onChange={(event) => setSearchSimulations(Number(event.target.value))}
-                              aria-label={homeView === 'LIVE' ? 'Intermediate publish simulations' : 'Search simulations'}
-                              title={homeView === 'LIVE' ? 'Publish updated live analysis every N simulations during the same search job' : 'Search simulations'}
+                              aria-label="Search simulations"
+                              title="Search simulations"
                             />
                           )}
                           {searchType === 'alphabeta' && (
@@ -3706,7 +3705,7 @@ const displayedP0EvalRef = useRef<number | null>(null);
                             <input
                               type="number"
                               min={1}
-                              max={LIVE_SEARCH_MAX_SIMULATIONS}
+                              max={MAX_SEARCH_SIMULATIONS}
                               value={searchSimulations}
                               onChange={(event) => setSearchSimulations(Number(event.target.value))}
                               aria-label="Forced search simulations per action"
@@ -3717,7 +3716,7 @@ const displayedP0EvalRef = useRef<number | null>(null);
                             <input
                               type="number"
                               min={1}
-                              max={LIVE_SEARCH_MAX_SIMULATIONS}
+                              max={MAX_SEARCH_SIMULATIONS}
                               value={searchBootstrapSimulationsPerAction}
                               onChange={(event) => setSearchBootstrapSimulationsPerAction(Number(event.target.value))}
                               aria-label="Bootstrap simulations per action"
@@ -3742,49 +3741,41 @@ const displayedP0EvalRef = useRef<number | null>(null);
                             }}
                             disabled={!canRunCurrentSearch || uiStatus === 'WAITING_ENGINE'}
                           >
-                            {homeView === 'LIVE' ? 'Analyze Turn' : 'Run Search'}
+                            Run Search
                           </button>
                         </div>
                       )}
-                      {homeView === 'LIVE' && isTreeSearchType && (
-                        <div className="analysis-settings-section analysis-search-row">
-                          <span>Limit</span>
-                          <span>{LIVE_SEARCH_MAX_SIMULATIONS.toLocaleString()} sims</span>
-                        </div>
-                      )}
-                      {homeView !== 'LIVE' && (
-                        <div className="analysis-settings-section analysis-search-row">
-                          <span>{deepAnalysisSettingsLabel}</span>
-                          {searchType === 'alphabeta' ? (
-                            <input
-                              type="number"
-                              min={1}
-                              max={64}
-                              value={alphabetaDepth}
-                              onChange={(event) => setAlphabetaDepth(Number(event.target.value))}
-                              aria-label="Deep analysis Alpha-Beta depth"
-                              title={deepAnalysisSettingsTitle}
-                            />
-                          ) : (
-                            <input
-                              type="number"
-                              min={1}
-                              max={LIVE_SEARCH_MAX_SIMULATIONS}
-                              value={deepAnalysisSimulations}
-                              onChange={(event) => setDeepAnalysisSimulations(Number(event.target.value))}
-                              aria-label={searchType === 'forced_child' ? 'Deep analysis forced search simulations per action' : 'Deep analysis simulations'}
-                              title={deepAnalysisSettingsTitle}
-                            />
-                          )}
-                        </div>
-                      )}
-                      {homeView !== 'LIVE' && searchType === 'mcts_bootstrap' && (
+                      <div className="analysis-settings-section analysis-search-row">
+                        <span>{deepAnalysisSettingsLabel}</span>
+                        {searchType === 'alphabeta' ? (
+                          <input
+                            type="number"
+                            min={1}
+                            max={64}
+                            value={alphabetaDepth}
+                            onChange={(event) => setAlphabetaDepth(Number(event.target.value))}
+                            aria-label="Deep analysis Alpha-Beta depth"
+                            title={deepAnalysisSettingsTitle}
+                          />
+                        ) : (
+                          <input
+                            type="number"
+                            min={1}
+                            max={MAX_SEARCH_SIMULATIONS}
+                            value={deepAnalysisSimulations}
+                            onChange={(event) => setDeepAnalysisSimulations(Number(event.target.value))}
+                            aria-label={searchType === 'forced_child' ? 'Deep analysis forced search simulations per action' : 'Deep analysis simulations'}
+                            title={deepAnalysisSettingsTitle}
+                          />
+                        )}
+                      </div>
+                      {searchType === 'mcts_bootstrap' && (
                         <div className="analysis-settings-section analysis-search-row">
                           <span>Bootstrap</span>
                           <input
                             type="number"
                             min={1}
-                            max={LIVE_SEARCH_MAX_SIMULATIONS}
+                            max={MAX_SEARCH_SIMULATIONS}
                             value={deepAnalysisBootstrapSimulationsPerAction}
                             onChange={(event) => setDeepAnalysisBootstrapSimulationsPerAction(Number(event.target.value))}
                             aria-label="Deep analysis bootstrap simulations per action"
@@ -3792,7 +3783,7 @@ const displayedP0EvalRef = useRef<number | null>(null);
                           />
                         </div>
                       )}
-                      {homeView !== 'LIVE' && usesEvalBatchSize && (
+                      {usesEvalBatchSize && (
                         <div className="analysis-settings-section analysis-search-row">
                           <span>Batch</span>
                           <input
@@ -4174,10 +4165,10 @@ const displayedP0EvalRef = useRef<number | null>(null);
                           const isAvailable = isOnBoardCard
                             ? false
                             : isReservedReplace
-                            ? liveAvailableCardIds.has(card.id)
+                            ? availableRevealCardIds.has(card.id)
                             : (isManualFreeEdit
                               ? true
-                              : (isSetup ? !setupUnavailableCardIds.has(card.id) : liveAvailableCardIds.has(card.id)));
+                              : (isSetup ? !setupUnavailableCardIds.has(card.id) : availableRevealCardIds.has(card.id)));
                           const optionClass = isAvailable ? 'available' : 'unavailable';
                           return (
                             <div

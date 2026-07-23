@@ -145,21 +145,6 @@ function NobleActionLabel({ noble, slot }: { noble: NobleDTO | null; slot: numbe
   );
 }
 
-export function actionTextLabel(actionIdx: number): string {
-  if (0 <= actionIdx && actionIdx <= 11) return 'BUY';
-  if (12 <= actionIdx && actionIdx <= 14) return 'BUY';
-  if (15 <= actionIdx && actionIdx <= 26) return 'RESERVE';
-  if (27 <= actionIdx && actionIdx <= 29) return `RESERVE from T${actionIdx - 26} deck`;
-  if (30 <= actionIdx && actionIdx <= 39) return 'TAKE';
-  if (40 <= actionIdx && actionIdx <= 44) return 'TAKE x2';
-  if (45 <= actionIdx && actionIdx <= 54) return 'TAKE';
-  if (55 <= actionIdx && actionIdx <= 59) return 'TAKE';
-  if (actionIdx === 60) return 'PASS';
-  if (61 <= actionIdx && actionIdx <= 65) return 'RETURN';
-  if (66 <= actionIdx && actionIdx <= 68) return `NOBLE #${actionIdx - 66}`;
-  return 'UNKNOWN';
-}
-
 export function ActionLabel({
   actionIdx,
   board,

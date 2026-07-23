@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import os
 import random
-import secrets
 import threading
 import uuid
 import copy
@@ -11,11 +9,11 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import numpy as np
 import torch
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -56,8 +54,6 @@ REPO_ROOT = Path(os.environ.get("AHINLENDOR_ENGINE_ROOT", str(APP_ROOT))).expand
 CHECKPOINT_DIR = Path(os.environ.get("AHINLENDOR_CHECKPOINT_DIR", str(APP_ROOT / "data" / "checkpoints"))).expanduser().resolve()
 DEFAULT_CHECKPOINT = os.environ.get("AHINLENDOR_DEFAULT_CHECKPOINT", "train_1773766638_123_resume_cycle_1405.pt")
 WEB_DIST_DIR = Path(os.environ.get("AHINLENDOR_WEB_DIST_DIR", str(APP_ROOT / "dist"))).expanduser().resolve()
-SPENDEE_LIVE_SAVE_PATH = Path(os.environ.get("AHINLENDOR_LIVE_SAVE_PATH", str(APP_ROOT / "data" / "live" / "current.json"))).expanduser().resolve()
-LIVE_INGEST_TOKEN = os.environ.get("AHINLENDOR_LIVE_INGEST_TOKEN", "")
 _STANDARD_CARD_TIER_BY_ID = {
     int(card["id"]): int(card["tier"])
     for card in list_standard_cards()
@@ -350,16 +346,6 @@ class SavedGameDTO(BaseModel):
     config: GameConfigDTO
     snapshots: list[SavedStateDTO] = Field(default_factory=list)
     current_index: int = Field(default=0, ge=0)
-
-
-class LiveSavedGameDTO(SavedGameDTO):
-    pass
-
-
-class LiveSaveStatusDTO(BaseModel):
-    exists: bool
-    path: str
-    updated_at: str | None = None
 
 
 class CatalogCardDTO(BaseModel):
@@ -840,7 +826,7 @@ def _random_state_from_json(value: Any) -> Any:
 
 def _normalize_state_for_inference(state: dict[str, Any]) -> dict[str, Any]:
     normalized = copy.deepcopy(state)
-    # Spendee bridge metadata contains observation timestamps and external
+    # Imported snapshot metadata can contain observation timestamps and external
     # counters that are not produced by native step() and should not affect
     # action inference.
     normalized.pop("metadata", None)
@@ -1132,6 +1118,7 @@ def _card_id_occurs_elsewhere_in_state(
     card_id: int,
     player_idx: int,
     slot: int,
+    include_hidden_deck: bool = True,
 ) -> bool:
     faceup_rows = state.get("faceup_card_ids")
     if isinstance(faceup_rows, list):
@@ -1142,14 +1129,15 @@ def _card_id_occurs_elsewhere_in_state(
                 if isinstance(value, int) and int(value) == int(card_id):
                     return True
 
-    deck_rows = state.get("deck_card_ids_by_tier")
-    if isinstance(deck_rows, list):
-        for row in deck_rows:
-            if not isinstance(row, list):
-                continue
-            for value in row:
-                if isinstance(value, int) and int(value) == int(card_id):
-                    return True
+    if include_hidden_deck:
+        deck_rows = state.get("deck_card_ids_by_tier")
+        if isinstance(deck_rows, list):
+            for row in deck_rows:
+                if not isinstance(row, list):
+                    continue
+                for value in row:
+                    if isinstance(value, int) and int(value) == int(card_id):
+                        return True
 
     players = state.get("players")
     if not isinstance(players, list):
@@ -1212,6 +1200,49 @@ def _force_reveal_reserved_card_if_current(
         env.load_state(state)
         return True
     return False
+
+
+def _force_set_hidden_reserved_card(
+    env: SplendorNativeEnv,
+    *,
+    player_idx: int,
+    slot: int,
+    card_id: int,
+) -> bool:
+    state = env.export_state()
+    reserved_by_slot = _player_cards_by_slot(state, player_idx)
+    current = reserved_by_slot.get(slot)
+    if not isinstance(current, dict):
+        return False
+    if bool(current.get("is_public", True)):
+        return False
+    if _card_id_occurs_elsewhere_in_state(
+        state,
+        card_id=int(card_id),
+        player_idx=player_idx,
+        slot=slot,
+        include_hidden_deck=False,
+    ):
+        return False
+
+    previous_card_id = current.get("card_id")
+    selected_tier = _STANDARD_CARD_TIER_BY_ID.get(int(card_id))
+    previous_tier = _STANDARD_CARD_TIER_BY_ID.get(int(previous_card_id)) if isinstance(previous_card_id, int) else selected_tier
+    if selected_tier is None or previous_tier is None or selected_tier != previous_tier:
+        return False
+
+    deck_rows = state.get("deck_card_ids_by_tier")
+    if isinstance(deck_rows, list) and 1 <= selected_tier <= len(deck_rows) and isinstance(deck_rows[selected_tier - 1], list):
+        deck_row = deck_rows[selected_tier - 1]
+        if int(card_id) in deck_row:
+            deck_row.remove(int(card_id))
+        if isinstance(previous_card_id, int) and int(previous_card_id) != int(card_id) and int(previous_card_id) not in deck_row:
+            deck_row.append(int(previous_card_id))
+
+    current["card_id"] = int(card_id)
+    current["is_public"] = True
+    env.load_state(state)
+    return True
 
 
 def _resolve_hidden_reserved_card_id(
@@ -2461,9 +2492,6 @@ class GameManager:
             self._loaded_move_log_full = list(self._move_log)
             return self._snapshot_locked()
 
-    def load_live_game(self, saved: LiveSavedGameDTO) -> GameSnapshotDTO:
-        return self.load_game(saved)
-
     def _is_player_turn_locked(self, step: StepState, config: GameConfig) -> bool:
         return _seat_str(step.current_player_id) == config.player_seat
 
@@ -2580,6 +2608,11 @@ class GameManager:
                 env.set_reserved_card(player_idx, event.slot, event.card_id)
             except Exception:
                 if not _force_reveal_reserved_card_if_current(
+                    env,
+                    player_idx=player_idx,
+                    slot=event.slot,
+                    card_id=event.card_id,
+                ) and not _force_set_hidden_reserved_card(
                     env,
                     player_idx=player_idx,
                     slot=event.slot,
@@ -3276,6 +3309,11 @@ class GameManager:
                     player_idx=player_idx,
                     slot=req.slot,
                     card_id=req.card_id,
+                ) and not _force_set_hidden_reserved_card(
+                    env,
+                    player_idx=player_idx,
+                    slot=req.slot,
+                    card_id=req.card_id,
                 ):
                     raise
             if pending_index is not None:
@@ -3451,59 +3489,6 @@ def new_game(req: NewGameRequest) -> GameSnapshotDTO:
 @app.get("/api/game/state", response_model=GameSnapshotDTO)
 def game_state() -> GameSnapshotDTO:
     return manager.get_state()
-
-
-@app.get("/api/game/live-save/status", response_model=LiveSaveStatusDTO)
-def live_save_status() -> LiveSaveStatusDTO:
-    path = SPENDEE_LIVE_SAVE_PATH
-    if not path.exists():
-        return LiveSaveStatusDTO(exists=False, path=str(path.resolve()))
-    stat = path.stat()
-    return LiveSaveStatusDTO(
-        exists=True,
-        path=str(path.resolve()),
-        updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-    )
-
-
-@app.put("/api/live-saves/current", response_model=LiveSaveStatusDTO)
-def live_save_ingest(
-    saved: LiveSavedGameDTO,
-    authorization: str | None = Header(default=None),
-) -> LiveSaveStatusDTO:
-    if not LIVE_INGEST_TOKEN:
-        raise HTTPException(status_code=503, detail="Live ingestion is not configured")
-    scheme, _, provided = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not provided or not secrets.compare_digest(provided, LIVE_INGEST_TOKEN):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    path = SPENDEE_LIVE_SAVE_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        temporary_path.write_text(saved.model_dump_json(indent=2), encoding="utf-8")
-        temporary_path.replace(path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-    stat = path.stat()
-    return LiveSaveStatusDTO(
-        exists=True,
-        path="remote ingest",
-        updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-    )
-
-
-@app.post("/api/game/live-save/load", response_model=GameSnapshotDTO)
-def live_save_load() -> GameSnapshotDTO:
-    path = SPENDEE_LIVE_SAVE_PATH
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"Live save not found: {path}")
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        saved = LiveSavedGameDTO.model_validate(payload)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to parse live save: {exc}") from exc
-    return manager.load_live_game(saved)
 
 
 @app.post("/api/game/player-move", response_model=PlayerMoveResponse)

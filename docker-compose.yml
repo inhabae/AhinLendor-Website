@@ -12,11 +12,9 @@ services:
       AHINLENDOR_CHECKPOINT_DIR: /data/checkpoints
       AHINLENDOR_DEFAULT_CHECKPOINT: ${AHINLENDOR_DEFAULT_CHECKPOINT:-train_1773766638_123_resume_cycle_1405.pt}
       AHINLENDOR_SELFPLAY_DIR: /data/selfplay
-      AHINLENDOR_LIVE_SAVE_PATH: /data/live/current.json
       AHINLENDOR_WEB_DIST_DIR: /app/dist
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./data/checkpoints:/data/checkpoints:ro
       - ./data/selfplay:/data/selfplay
-      - ./data/live:/data/live

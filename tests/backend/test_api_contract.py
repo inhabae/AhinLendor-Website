@@ -1,30 +1,19 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
 from ahinlendor import api
 
 
-def live_payload() -> dict:
-    return {
-        "version": 2,
-        "saved_at": "2026-07-21T00:00:00+00:00",
-        "game_id": "live-test",
-        "config": {
-            "checkpoint_id": "champion",
-            "checkpoint_path": "/data/checkpoints/champion.pt",
-            "num_simulations": 32,
-            "player_seat": "P0",
-            "seed": 1,
-            "manual_reveal_mode": False,
-            "analysis_mode": True,
-        },
-        "snapshots": [],
-        "current_index": 0,
-    }
+class FakeEnv:
+    def __init__(self, state: dict) -> None:
+        self.state = state
+
+    def export_state(self) -> dict:
+        return self.state
+
+    def load_state(self, state: dict) -> None:
+        self.state = state
 
 
 def test_healthz() -> None:
@@ -41,29 +30,39 @@ def test_catalogs_and_spa_fallback() -> None:
     assert "AhinLendor" in response.text
 
 
-def test_live_ingest_requires_bearer_token(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(api, "LIVE_INGEST_TOKEN", "correct-token")
-    monkeypatch.setattr(api, "SPENDEE_LIVE_SAVE_PATH", tmp_path / "current.json")
-    client = TestClient(api.app)
+def test_force_set_hidden_reserved_card_swaps_with_hidden_deck_pool() -> None:
+    tier = 1
+    previous_card_id, selected_card_id = list(api._STANDARD_CARD_TIER_BY_ID)[:2]
+    for first_id, first_tier in api._STANDARD_CARD_TIER_BY_ID.items():
+        if first_tier != tier:
+            continue
+        for second_id, second_tier in api._STANDARD_CARD_TIER_BY_ID.items():
+            if second_id != first_id and second_tier == tier:
+                previous_card_id = first_id
+                selected_card_id = second_id
+                break
+        else:
+            continue
+        break
+    state = {
+        "faceup_card_ids": [[], [], []],
+        "deck_card_ids_by_tier": [[selected_card_id], [], []],
+        "players": [
+            {"purchased_card_ids": [], "reserved": []},
+            {
+                "purchased_card_ids": [],
+                "reserved": [
+                    {"slot": 0, "card_id": previous_card_id, "is_public": False},
+                ],
+            },
+        ],
+    }
+    env = FakeEnv(state)
 
-    response = client.put("/api/live-saves/current", json=live_payload())
-    assert response.status_code == 401
-    assert not (tmp_path / "current.json").exists()
+    assert api._force_set_hidden_reserved_card(env, player_idx=1, slot=0, card_id=selected_card_id)
 
-
-def test_live_ingest_is_atomic_and_status_compatible(tmp_path: Path, monkeypatch) -> None:
-    live_path = tmp_path / "current.json"
-    monkeypatch.setattr(api, "LIVE_INGEST_TOKEN", "correct-token")
-    monkeypatch.setattr(api, "SPENDEE_LIVE_SAVE_PATH", live_path)
-    client = TestClient(api.app)
-
-    response = client.put(
-        "/api/live-saves/current",
-        headers={"Authorization": "Bearer correct-token"},
-        json=live_payload(),
-    )
-    assert response.status_code == 200
-    assert response.json()["exists"] is True
-    assert json.loads(live_path.read_text())["game_id"] == "live-test"
-    assert client.get("/api/game/live-save/status").json()["exists"] is True
-    assert not list(tmp_path.glob("*.tmp"))
+    reserved = env.state["players"][1]["reserved"][0]
+    assert reserved["card_id"] == selected_card_id
+    assert reserved["is_public"] is True
+    assert selected_card_id not in env.state["deck_card_ids_by_tier"][0]
+    assert previous_card_id in env.state["deck_card_ids_by_tier"][0]
