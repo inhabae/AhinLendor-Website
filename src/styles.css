@@ -727,46 +727,6 @@ input, select {
 .move-log-label-main { min-width: 0; overflow: hidden; }
 .move-log-deviation-row { color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 3px; padding: 4px 0 4px 34px; }
 .move-log-deviation-moves { display: inline-flex; flex-wrap: wrap; }
-.move-log-btn .action-label,
-.move-log-deviation-btn .action-label { flex-wrap: nowrap; gap: 9px; max-width: 100%; overflow: hidden; }
-.move-log-btn .action-verb,
-.move-log-deviation-btn .action-verb {
-  font-size: 9px;
-  height: 20px;
-  letter-spacing: .03em;
-  padding: 0 5px;
-}
-.move-log-btn .action-card-chip,
-.move-log-deviation-btn .action-card-chip {
-  border-left-width: 4px;
-  gap: 3px;
-  min-height: 20px;
-  padding: 0 3px;
-  width: auto;
-}
-.move-log-btn .action-card-points,
-.move-log-deviation-btn .action-card-points { font-size: 11px; min-width: 7px; }
-.move-log-btn .action-group-card-reqs,
-.move-log-deviation-btn .action-group-card-reqs { gap: 2px; padding-left: 3px; }
-.move-log-btn .action-gem-chip,
-.move-log-deviation-btn .action-gem-chip {
-  font-size: 8px;
-  height: 13px;
-  min-width: 13px;
-  width: 13px;
-}
-.move-log-btn .action-deck-chip,
-.move-log-deviation-btn .action-deck-chip {
-  border-left-width: 4px;
-  font-size: 10px;
-  height: 20px;
-  min-width: 32px;
-  padding: 0 5px;
-}
-.move-log-btn .action-meta,
-.move-log-deviation-btn .action-meta,
-.move-log-btn .action-mult,
-.move-log-deviation-btn .action-mult { font-size: 9px; }
 .action-label { align-items: center; column-gap: 12px; display: inline-flex; flex-wrap: wrap; min-width: 0; row-gap: 4px; }
 .action-verb {
   align-items: center;

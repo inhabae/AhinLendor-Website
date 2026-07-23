@@ -454,7 +454,7 @@ def _seat_str(player_id: int) -> Literal["P0", "P1"]:
 
 
 def _seat_display_str(seat: Literal["P0", "P1"]) -> str:
-    return "P1" if seat == "P0" else "P2"
+    return "Player 1" if seat == "P0" else "Player 2"
 
 
 def _is_blocking_pending_reveal(item: "PendingReveal") -> bool:

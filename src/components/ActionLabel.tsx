@@ -1,17 +1,5 @@
 import {
-  TAKE2_PAIRS,
-  TAKE3_TRIPLETS,
-  isBuyFaceupAction,
-  isBuyReservedAction,
-  isNobleAction,
-  isPassAction,
-  isReserveDeckAction,
-  isReserveFaceupAction,
-  isReturnAction,
-  isTake1Action,
-  isTake2Action,
-  isTake2SameAction,
-  isTake3Action,
+  classifyAction,
 } from '../lib/actionEncoding';
 import type { ReactElement } from 'react';
 import { ActionDisplayDTO, BoardStateDTO, CardDTO, NobleDTO } from '../types';
@@ -164,33 +152,31 @@ export function ActionLabel({
     } else if (display.kind === 'noble') {
       content = <NobleActionLabel noble={display.noble ?? nobleBySlot(board, display.noble_slot ?? -1)} slot={display.noble_slot} />;
     }
-  } else if (isBuyFaceupAction(actionIdx)) {
-    const tier = Math.floor(actionIdx / 4) + 1;
-    const slot = actionIdx % 4;
-    content = <CardActionLabel verb="BUY" card={faceupCard(board, tier, slot)} hideVerb={hideVerb} />;
-  } else if (isBuyReservedAction(actionIdx)) {
-    content = <CardActionLabel verb="BUY" card={reservedCard(board, actionIdx - 12)} hideVerb={hideVerb} />;
-  } else if (isReserveFaceupAction(actionIdx)) {
-    const rel = actionIdx - 15;
-    const tier = Math.floor(rel / 4) + 1;
-    const slot = rel % 4;
-    content = <CardActionLabel verb="RESERVE" card={faceupCard(board, tier, slot)} hideVerb={hideVerb} />;
-  } else if (isReserveDeckAction(actionIdx)) {
-    content = <DeckReserveLabel tier={(actionIdx - 26) as 1 | 2 | 3} hideVerb={hideVerb} />;
-  } else if (isTake3Action(actionIdx)) {
-    content = <TakeLabel verb="TAKE" colors={TAKE3_TRIPLETS[actionIdx - 30]} hideVerb={hideVerb} />;
-  } else if (isTake2SameAction(actionIdx)) {
-    content = <TakeLabel verb="TAKE" colors={[actionIdx - 40]} duplicate={2} hideVerb={hideVerb} />;
-  } else if (isTake2Action(actionIdx)) {
-    content = <TakeLabel verb="TAKE" colors={TAKE2_PAIRS[actionIdx - 45]} hideVerb={hideVerb} />;
-  } else if (isTake1Action(actionIdx)) {
-    content = <TakeLabel verb="TAKE" colors={[actionIdx - 55]} hideVerb={hideVerb} />;
-  } else if (isPassAction(actionIdx)) {
-    content = <span className="action-verb">PASS</span>;
-  } else if (isReturnAction(actionIdx)) {
-    content = <TakeLabel verb="RETURN" colors={[actionIdx - 61]} hideVerb={hideVerb} />;
-  } else if (isNobleAction(actionIdx)) {
-    content = <NobleActionLabel noble={nobleBySlot(board, actionIdx - 66)} slot={actionIdx - 66} />;
+  } else {
+    const classified = classifyAction(actionIdx);
+    if (classified.kind === 'buyFaceup') {
+      content = <CardActionLabel verb="BUY" card={faceupCard(board, classified.tier, classified.slot)} hideVerb={hideVerb} />;
+    } else if (classified.kind === 'buyReserved') {
+      content = <CardActionLabel verb="BUY" card={reservedCard(board, classified.slot)} hideVerb={hideVerb} />;
+    } else if (classified.kind === 'reserveFaceup') {
+      content = <CardActionLabel verb="RESERVE" card={faceupCard(board, classified.tier, classified.slot)} hideVerb={hideVerb} />;
+    } else if (classified.kind === 'reserveDeck') {
+      content = <DeckReserveLabel tier={classified.tier} hideVerb={hideVerb} />;
+    } else if (classified.kind === 'take3') {
+      content = <TakeLabel verb="TAKE" colors={classified.colorIndexes} hideVerb={hideVerb} />;
+    } else if (classified.kind === 'take2Same') {
+      content = <TakeLabel verb="TAKE" colors={[classified.colorIndex]} duplicate={2} hideVerb={hideVerb} />;
+    } else if (classified.kind === 'take2') {
+      content = <TakeLabel verb="TAKE" colors={classified.colorIndexes} hideVerb={hideVerb} />;
+    } else if (classified.kind === 'take1') {
+      content = <TakeLabel verb="TAKE" colors={[classified.colorIndex]} hideVerb={hideVerb} />;
+    } else if (classified.kind === 'pass') {
+      content = <span className="action-verb">PASS</span>;
+    } else if (classified.kind === 'return') {
+      content = <TakeLabel verb="RETURN" colors={[classified.colorIndex]} hideVerb={hideVerb} />;
+    } else if (classified.kind === 'noble') {
+      content = <NobleActionLabel noble={nobleBySlot(board, classified.slot)} slot={classified.slot} />;
+    }
   }
 
   return (

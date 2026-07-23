@@ -60,10 +60,12 @@ function analysisPublishInterval(totalSimulations: number): number {
   return Math.max(64, Math.min(2000, Math.floor(normalized / 20) || 1));
 }
 
-function winnerLabel(winner: number): string | null {
-  if (winner === 0) return 'P1';
-  if (winner === 1) return 'P2';
-  return null;
+function winnerLabel(snapshot: GameSnapshotDTO | null): string | null {
+  if (!snapshot || snapshot.winner < 0) {
+    return null;
+  }
+  const winnerSeat: Seat = snapshot.winner === 0 ? 'P0' : 'P1';
+  return snapshot.board_state?.players.find((player) => player.seat === winnerSeat)?.display_name ?? null;
 }
 
 interface MoveLogRow {
@@ -281,7 +283,7 @@ function p0WinningEval(value: number | null | undefined, playerToMove: Seat | nu
 export function App() {
   const [catalogCards, setCatalogCards] = useState<CatalogCardDTO[]>([]);
   const [catalogNobles, setCatalogNobles] = useState<CatalogNobleDTO[]>([]);
-  const [numSimulations] = useState(400);
+  const numSimulations = 400;
   const [searchSimulations, setSearchSimulations] = useState(DEFAULT_SEARCH_SIMULATIONS);
   const [deepAnalysisSimulations, setDeepAnalysisSimulations] = useState(DEFAULT_DEEP_ANALYSIS_SIMULATIONS);
   const [searchBootstrapSimulationsPerAction, setSearchBootstrapSimulationsPerAction] = useState(
@@ -294,8 +296,8 @@ export function App() {
   const [deepAnalysisEvalBatchSize, setDeepAnalysisEvalBatchSize] = useState(DEFAULT_GPU_EVAL_BATCH_SIZE);
   const [searchType, setSearchType] = useState<SearchType>('mcts_bootstrap');
   const [alphabetaDepth, setAlphabetaDepth] = useState(DEFAULT_ALPHABETA_DEPTH);
-  const [playerSeat] = useState<Seat>('P0');
-  const [seed] = useState('');
+  const playerSeat: Seat = 'P0';
+  const seed = '';
   const [homeView, setHomeViewState] = useState<HomeView>(() => homeViewFromPath(window.location.pathname));
 
   function setHomeView(nextView: HomeView): void {
@@ -2584,7 +2586,7 @@ const displayedP0EvalRef = useRef<number | null>(null);
   }, [allAnalysisMoves]);
   const movesEmptyMessage = useMemo(() => {
     if (snapshot?.status !== 'IN_PROGRESS') {
-      const winner = winnerLabel(snapshot?.winner ?? -1);
+      const winner = winnerLabel(snapshot);
       return winner ? `Game over · ${winner} is victorious` : 'Game over';
     }
     if (uiStatus === 'WAITING_REVEAL' || snapshot.pending_reveals.some((reveal) => isBlockingPendingReveal(reveal))) {
@@ -3126,8 +3128,8 @@ const displayedP0EvalRef = useRef<number | null>(null);
                 In live competition, AhinLendor reached <strong>Rank 1</strong> on the {" "}
                 <a href="https://spendee.mattle.online/" target="_blank" rel="noreferrer">spendee.mattle.online</a>
                 {" "} leaderboard. It has also won exhibition matches against two of the <strong>top-ranked human players</strong> on 
-                {" "} <a href="https://boardgamearena.com/" target="_blank" rel="noreferrer">BoardGameArena</a>: seed
-                seed (zuroti) and FourDimensional.
+                {" "} <a href="https://boardgamearena.com/" target="_blank" rel="noreferrer">BoardGameArena</a>: 
+                {" "}<strong>seed seed (zuroti)</strong> and <strong>FourDimensional</strong>.
               </p>
               <img src="/leaderboard-rank1.png" alt="AhinLendor leaderboard rank 1" className="about-image" />
             </section>

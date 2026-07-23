@@ -30,7 +30,7 @@ function buildBoardSvg(displayBoard: BoardStateDTO): { svg: string; width: numbe
   const textLight = rootStyle.color || '#eef2fb';
   const textMuted = '#9aa6bc';
   const width = 1880;
-  const height = 1040;
+  const height = 1140;
 
   const renderToken = (x: number, y: number, color: keyof TokenCountsDTO, count: number): string => `
     <g transform="translate(${x} ${y})">
