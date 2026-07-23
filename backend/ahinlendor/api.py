@@ -1182,9 +1182,9 @@ def _infer_actions_between_snapshots(
         candidate_slots = public_match_slots
         if not candidate_slots and len(hidden_slots) == 1:
             candidate_slots = hidden_slots
-                if len(candidate_slots) == 1:
+        if len(candidate_slots) == 1:
             action_idx = 12 + int(candidate_slots[0])
-                    if is_buy_reserved_action(action_idx) and bool(start_step.mask[action_idx]):
+            if is_buy_reserved_action(action_idx) and bool(start_step.mask[action_idx]):
                 return [action_idx]
     return None
 
