@@ -23,7 +23,7 @@ export function NobleView({ noble, onClick }: { noble: NobleDTO; onClick?: () =>
       <div className={`noble-reqs noble-reqs-count-${reqs.length}`}>
         {isPlaceholder && <div className="card-placeholder-mark">?</div>}
         {!isPlaceholder && reqs.map((color) => (
-          <span key={color} className={`req-chip cost-circle token-${color}`}>
+          <span key={color} className={`req-chip req-card token-${color}`}>
             <b>{noble.requirements[color]}</b>
           </span>
         ))}

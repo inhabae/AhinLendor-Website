@@ -6,6 +6,7 @@ import {
   EngineJobStatusDTO,
   EngineThinkRequest,
   EngineThinkResponse,
+  GameReplayDTO,
   GameSnapshotDTO,
   MoveLogEntryDTO,
   PlayerMoveResponse,
@@ -21,7 +22,6 @@ import { BoardViewport } from './components/board/BoardViewport';
 import { TopNav } from './components/TopNav';
 import { HomePage } from './components/pages/HomePage';
 import { AboutPage } from './components/pages/AboutPage';
-import { downloadBoardImage } from './utils/exportBoardImage';
 import { fetchJSON } from './lib/apiClient';
 import {
   HomeView,
@@ -52,11 +52,9 @@ import { useAnimatedEval } from './hooks/useAnimatedEval';
 import { useCatalogIndex } from './hooks/useCatalogIndex';
 import { useEnginePolling } from './hooks/useEnginePolling';
 import {
-  isBuyFaceupAction,
+  classifyAction,
   isBuyReservedAction,
   isNobleAction,
-  isReserveDeckAction,
-  isReserveFaceupAction,
   isReturnAction,
   isTake1Action,
   isTake2Action,
@@ -73,7 +71,7 @@ const MAX_EVAL_BATCH_SIZE = 64;
 const DEFAULT_ALPHABETA_DEPTH = 3;
 const DEFAULT_SEARCH_SIMULATIONS = 200_000;
 const DEFAULT_BOOTSTRAP_SIMULATIONS_PER_ACTION = 20_000;
-const MAX_SEARCH_SIMULATIONS = 1_000_000;
+const MAX_SEARCH_SIMULATIONS = 5_000_000;
 
 const MOVE_GROUP_LABELS: Record<MoveGroupKey, string> = {
   buy: 'Buy',
@@ -82,6 +80,14 @@ const MOVE_GROUP_LABELS: Record<MoveGroupKey, string> = {
   return: 'Return',
   noble: 'Noble',
   other: 'Other',
+};
+
+type AnalysisMoveGroup = {
+  key: string;
+  label: string;
+  moves?: ActionInfoDTO[];
+  columns?: Array<{ key: string; label: string; moves: ActionInfoDTO[] }>;
+  hideVerb: boolean;
 };
 
 function isBlockingPendingReveal(reveal: GameSnapshotDTO['pending_reveals'][number]): boolean {
@@ -107,17 +113,15 @@ function parseRevealKey(key: string): { zone: 'faceup_card' | 'reserved_card' | 
 export function App() {
   const numSimulations = 400;
   const [searchSimulations, setSearchSimulations] = useState(DEFAULT_SEARCH_SIMULATIONS);
-  const [deepAnalysisSimulations, setDeepAnalysisSimulations] = useState(DEFAULT_DEEP_ANALYSIS_SIMULATIONS);
+  const deepAnalysisSimulations = DEFAULT_DEEP_ANALYSIS_SIMULATIONS;
   const [searchBootstrapSimulationsPerAction, setSearchBootstrapSimulationsPerAction] = useState(
     DEFAULT_BOOTSTRAP_SIMULATIONS_PER_ACTION,
   );
-  const [deepAnalysisBootstrapSimulationsPerAction, setDeepAnalysisBootstrapSimulationsPerAction] = useState(
-    DEFAULT_BOOTSTRAP_SIMULATIONS_PER_ACTION,
-  );
-  const [searchEvalBatchSize, setSearchEvalBatchSize] = useState(DEFAULT_GPU_EVAL_BATCH_SIZE);
-  const [deepAnalysisEvalBatchSize, setDeepAnalysisEvalBatchSize] = useState(DEFAULT_GPU_EVAL_BATCH_SIZE);
-  const [searchType, setSearchType] = useState<SearchType>('mcts_bootstrap');
-  const [alphabetaDepth, setAlphabetaDepth] = useState(DEFAULT_ALPHABETA_DEPTH);
+  const deepAnalysisBootstrapSimulationsPerAction = DEFAULT_BOOTSTRAP_SIMULATIONS_PER_ACTION;
+  const searchEvalBatchSize = DEFAULT_GPU_EVAL_BATCH_SIZE;
+  const deepAnalysisEvalBatchSize = DEFAULT_GPU_EVAL_BATCH_SIZE;
+  const searchType: SearchType = 'mcts_bootstrap';
+  const alphabetaDepth = DEFAULT_ALPHABETA_DEPTH;
   const playerSeat: Seat = 'P0';
   const seed = '';
   const { homeView, setHomeView } = useHomeView();
@@ -137,9 +141,14 @@ export function App() {
   const [analysisPanelTab, setAnalysisPanelTab] = useState<AnalysisPanelTab>('ANALYSIS');
   const [deepAnalysisBySnapshot, setDeepAnalysisBySnapshot] = useState<Record<string, DeepAnalysisEntry>>({});
   const [deepAnalysisSearchBySnapshot, setDeepAnalysisSearchBySnapshot] = useState<Record<string, DeepAnalysisSearchResult>>({});
+  const analysisSearchByPositionRef = useRef<Record<string, NonNullable<EngineJobStatusDTO['result']>>>({});
   const [isLoadedPostAnalysisGame, setIsLoadedPostAnalysisGame] = useState(false);
   const [isDeepAnalysisRunning, setIsDeepAnalysisRunning] = useState(false);
   const [isAutoStartingGame, setIsAutoStartingGame] = useState(false);
+  const [quickEntryPromptDone, setQuickEntryPromptDone] = useState(false);
+  const [analysisEntryPromptDone, setAnalysisEntryPromptDone] = useState(false);
+  const [isReplayLoading, setIsReplayLoading] = useState(false);
+  const [isReplaySaving, setIsReplaySaving] = useState(false);
   const [deepAnalysisProgress, setDeepAnalysisProgress] = useState<{ done: number; total: number } | null>(null);
   const [activeVariationSelection, setActiveVariationSelection] = useState<HighlightedVariation | null>(null);
 
@@ -175,6 +184,7 @@ export function App() {
     setActiveVariationSelection({ branchId, moveIndex });
   }
   const analysisSettingsRef = useRef<HTMLDivElement | null>(null);
+  const replayFileInputRef = useRef<HTMLInputElement | null>(null);
   const moveLogGridRef = useRef<HTMLDivElement | null>(null);
   const autoStartViewRef = useRef<HomeView | null>(null);
   const isSetupLikeView = homeView === 'ANALYSIS';
@@ -358,13 +368,16 @@ export function App() {
       : null;
     const searchSource = deepSearchOverride ?? deepAnalysisSearchBySnapshot;
     const deepResult = snapshotIndex != null ? (searchSource[snapshotIndex] ?? null) : null;
-    if (deepResult || !preserveActiveSearch) {
+    const positionSearchKey = snapshotSearchKey(nextSnapshot);
+    const cachedSearchResult = nextSnapshot.config?.analysis_mode ? (analysisSearchByPositionRef.current[positionSearchKey] ?? null) : null;
+    const restoredSearchResult = deepResult ?? cachedSearchResult;
+    if (restoredSearchResult || !preserveActiveSearch) {
       setJobStatus(
-        deepResult
+        restoredSearchResult
           ? {
-              job_id: `deep-${snapshotIndex}`,
+              job_id: deepResult ? `deep-${snapshotIndex}` : `cached-${positionSearchKey}`,
               status: 'DONE',
-              result: deepResult,
+              result: restoredSearchResult,
               error: null,
             }
           : null,
@@ -416,12 +429,15 @@ export function App() {
         return isIncomingPrefix ? prev : incoming;
       });
     }
-    lastSnapshotSearchKeyRef.current = snapshotSearchKey(nextSnapshot);
+    lastSnapshotSearchKeyRef.current = positionSearchKey;
     setUiStatus(deriveUiStatus(nextSnapshot));
     const nextAutoAnalyzeKey = autoAnalyzeKey(nextSnapshot);
     const shouldStartSearch =
-      engineShouldMove ||
-      (!suppressAutoAnalyze && shouldAutoAnalyze(nextSnapshot) && lastAutoAnalyzeKeyRef.current !== nextAutoAnalyzeKey);
+      !restoredSearchResult
+      && (
+        engineShouldMove
+        || (!suppressAutoAnalyze && shouldAutoAnalyze(nextSnapshot) && lastAutoAnalyzeKeyRef.current !== nextAutoAnalyzeKey)
+      );
     if (shouldStartSearch) {
       lastAutoAnalyzeKeyRef.current = nextAutoAnalyzeKey;
       await startEngineThink({ snapshotOverride: nextSnapshot });
@@ -515,6 +531,20 @@ export function App() {
     setUiStatus,
   });
 
+  useEffect(() => {
+    if (!snapshot?.config?.analysis_mode || jobStatus?.status !== 'DONE' || !jobStatus.result) {
+      return;
+    }
+    const completedResult = jobStatus.result;
+    const positionSearchKey = snapshotSearchKey(snapshot);
+    if (analysisSearchByPositionRef.current[positionSearchKey] !== completedResult) {
+      analysisSearchByPositionRef.current = {
+        ...analysisSearchByPositionRef.current,
+        [positionSearchKey]: completedResult,
+      };
+    }
+  }, [jobStatus, snapshot]);
+
   async function startGame(manualRevealMode: boolean, playerSeatOverride?: Seat, analysisModeOverride?: boolean): Promise<void> {
     setError(null);
     clearPolling();
@@ -528,6 +558,7 @@ export function App() {
     setVariationBranches([]);
     setDeepAnalysisBySnapshot({});
     setDeepAnalysisSearchBySnapshot({});
+    analysisSearchByPositionRef.current = {};
     setIsLoadedPostAnalysisGame(false);
     setDeepAnalysisProgress(null);
     setIsDeepAnalysisRunning(false);
@@ -546,14 +577,22 @@ export function App() {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    await handleSnapshotUpdate(nextSnapshot);
+    const shouldEngineMove = Boolean(
+      !nextSnapshot.config?.analysis_mode
+      && nextSnapshot.status === 'IN_PROGRESS'
+      && nextSnapshot.player_to_move !== nextSnapshot.config?.player_seat,
+    );
+    await handleSnapshotUpdate(nextSnapshot, shouldEngineMove);
   }
 
-  async function startQuickGame(): Promise<void> {
-    await startGame(false, playerSeat, false);
+  async function startQuickGame(playerSeatOverride: Seat = playerSeat): Promise<void> {
+    setQuickEntryPromptDone(true);
+    setAnalysisPanelTab('MOVES');
+    await startGame(false, playerSeatOverride, false);
   }
 
   async function startAnalysisGame(): Promise<void> {
+    setAnalysisEntryPromptDone(true);
     await startGame(true, playerSeat, true);
   }
 
@@ -569,33 +608,71 @@ export function App() {
     setVariationBranches([]);
     setDeepAnalysisBySnapshot({});
     setDeepAnalysisSearchBySnapshot({});
+    analysisSearchByPositionRef.current = {};
     setIsLoadedPostAnalysisGame(false);
     setDeepAnalysisProgress(null);
     setIsDeepAnalysisRunning(false);
     setIsAutoStartingGame(false);
+    setQuickEntryPromptDone(false);
+    setIsReplayLoading(false);
+    setIsReplaySaving(false);
     clearActiveVariationSelection();
     lastAutoAnalyzeKeyRef.current = null;
   }
 
   function onOpenQuickView(): void {
+    if (homeView === 'QUICK') {
+      return;
+    }
     resetGameViewState();
+    setQuickEntryPromptDone(false);
     setHomeView('QUICK');
   }
 
   function onOpenManualView(): void {
+    if (homeView === 'ANALYSIS') {
+      return;
+    }
     resetGameViewState();
+    setAnalysisEntryPromptDone(false);
     setHomeView('ANALYSIS');
   }
 
   function onOpenAboutView(): void {
+    if (homeView === 'ABOUT') {
+      return;
+    }
     resetGameViewState();
     setRevealSelections({});
     setActiveRevealKey(null);
     setHomeView('ABOUT');
   }
 
+  function onOpenHomeView(): void {
+    if (homeView === 'HOME') {
+      return;
+    }
+    setHomeView('HOME');
+  }
+
+  async function onStartQuickFromHome(seat: Seat): Promise<void> {
+    resetGameViewState();
+    setHomeView('QUICK');
+    await startQuickGame(seat);
+  }
+
   useEffect(() => {
     if (homeView !== 'QUICK' && homeView !== 'ANALYSIS') {
+      autoStartViewRef.current = null;
+      setIsAutoStartingGame(false);
+      return;
+    }
+    if (homeView === 'QUICK') {
+      autoStartViewRef.current = null;
+      setIsAutoStartingGame(false);
+      return;
+    }
+    if (homeView === 'ANALYSIS' && !analysisEntryPromptDone) {
       autoStartViewRef.current = null;
       setIsAutoStartingGame(false);
       return;
@@ -608,18 +685,14 @@ export function App() {
     setIsAutoStartingGame(true);
     void (async () => {
       try {
-        if (homeView === 'QUICK') {
-          await startQuickGame();
-        } else {
-          await startAnalysisGame();
-        }
+        await startAnalysisGame();
       } catch (err) {
         setError((err as Error).message);
       } finally {
         setIsAutoStartingGame(false);
       }
     })();
-  }, [homeView, isAutoStartingGame, playerSeat, snapshot]);
+  }, [homeView, isAutoStartingGame, playerSeat, snapshot, analysisEntryPromptDone, quickEntryPromptDone]);
 
   async function waitMs(durationMs: number): Promise<void> {
     await new Promise<void>((resolve) => {
@@ -996,7 +1069,7 @@ export function App() {
         method: 'POST',
         body: '{}',
       });
-      const shouldSuppressAutoAnalyze = suppressAutoAnalyze || isLoadedPostAnalysisGame;
+      const shouldSuppressAutoAnalyze = suppressAutoAnalyze;
       if (shouldSuppressAutoAnalyze) {
         lastAutoAnalyzeKeyRef.current = autoAnalyzeKey(nextSnapshot);
       }
@@ -1020,7 +1093,7 @@ export function App() {
         method: 'POST',
         body: '{}',
       });
-      const shouldSuppressAutoAnalyze = suppressAutoAnalyze || isLoadedPostAnalysisGame;
+      const shouldSuppressAutoAnalyze = suppressAutoAnalyze;
       if (shouldSuppressAutoAnalyze) {
         lastAutoAnalyzeKeyRef.current = autoAnalyzeKey(nextSnapshot);
       }
@@ -1050,7 +1123,7 @@ export function App() {
       clearActiveVariationSelection();
     }
     try {
-      const shouldSuppressAutoAnalyze = suppressAutoAnalyze || isLoadedPostAnalysisGame;
+      const shouldSuppressAutoAnalyze = suppressAutoAnalyze;
       const nextSnapshot = await fetchJSON<GameSnapshotDTO>('/api/game/jump-to-turn', {
         method: 'POST',
         body: JSON.stringify({ turn_index: turnIndex }),
@@ -1089,7 +1162,7 @@ export function App() {
     // moves up to that position and would overwrite the full recorded mainline.
     const shouldPreserveLog = loadedHistoricalMainlineLengthRef.current > 0;
     try {
-      const shouldSuppressAutoAnalyze = suppressAutoAnalyze || isLoadedPostAnalysisGame;
+      const shouldSuppressAutoAnalyze = suppressAutoAnalyze;
       const nextSnapshot = await fetchJSON<GameSnapshotDTO>('/api/game/jump-to-snapshot', {
         method: 'POST',
         body: JSON.stringify({ snapshot_index: snapshotIndex }),
@@ -1127,7 +1200,7 @@ export function App() {
         return bestTurnIndex ?? 0;
       })();
       // Fallback for non-snapshot sessions.
-      await onJumpToTurn(fallbackTurnIndex, false, suppressAutoAnalyze || isLoadedPostAnalysisGame);
+      await onJumpToTurn(fallbackTurnIndex, false, suppressAutoAnalyze);
     }
   }
 
@@ -1186,7 +1259,7 @@ export function App() {
         method: 'POST',
         body: JSON.stringify({ snapshot_index: snapshotIndex }),
       });
-      const shouldSuppressAutoAnalyze = suppressAutoAnalyze || isLoadedPostAnalysisGame;
+      const shouldSuppressAutoAnalyze = suppressAutoAnalyze;
       if (shouldSuppressAutoAnalyze) {
         lastAutoAnalyzeKeyRef.current = autoAnalyzeKey(directSnapshot);
       }
@@ -1211,7 +1284,7 @@ export function App() {
         });
         nextSnapshot = result.snapshot;
       }
-      const shouldSuppressAutoAnalyze = suppressAutoAnalyze || isLoadedPostAnalysisGame;
+      const shouldSuppressAutoAnalyze = suppressAutoAnalyze;
       if (shouldSuppressAutoAnalyze) {
         lastAutoAnalyzeKeyRef.current = autoAnalyzeKey(nextSnapshot);
       }
@@ -1439,6 +1512,24 @@ export function App() {
     );
   }
 
+  function truncateMoveHistoryAfterSnapshot(snapshotIndex: number): void {
+    setLoadedMoveLog((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      return prev.filter((move) => move.result_snapshot_index <= snapshotIndex);
+    });
+    loadedHistoricalMainlineLengthRef.current = Math.min(
+      loadedHistoricalMainlineLengthRef.current,
+      Math.max(0, snapshotIndex),
+    );
+    loadedHistoricalMainlineTailSnapshotRef.current = Math.min(
+      loadedHistoricalMainlineTailSnapshotRef.current,
+      Math.max(0, snapshotIndex),
+    );
+    setVariationBranches((prev) => prev.filter((branch) => branch.anchorSnapshotIndex <= snapshotIndex));
+  }
+
   async function onRevealCardWithId(tier: number, slot: number, cardId?: number): Promise<void> {
     const beforeSnapshot = snapshot;
     const beforeSnapshotIndex = currentSnapshotIndex;
@@ -1478,6 +1569,7 @@ export function App() {
         return next;
       });
       setActiveRevealKey(nextRevealKeyInSameGroup(result.snapshot, { zone: 'faceup_card', tier, slot }));
+      truncateMoveHistoryAfterSnapshot(beforeSnapshotIndex);
       await handleSnapshotUpdate(result.snapshot, result.engine_should_move);
     } catch (err) {
       setError((err as Error).message);
@@ -1523,6 +1615,7 @@ export function App() {
         return next;
       });
       setActiveRevealKey(nextRevealKeyInSameGroup(result.snapshot, { zone: 'reserved_card', tier, slot, seat }));
+      truncateMoveHistoryAfterSnapshot(beforeSnapshotIndex);
       await handleSnapshotUpdate(
         result.snapshot,
         result.engine_should_move || Boolean(result.snapshot.config?.analysis_mode),
@@ -1570,6 +1663,7 @@ export function App() {
         return next;
       });
       setActiveRevealKey(nextRevealKeyInSameGroup(result.snapshot, { zone: 'noble', tier: 0, slot }));
+      truncateMoveHistoryAfterSnapshot(beforeSnapshotIndex);
       await handleSnapshotUpdate(result.snapshot, result.engine_should_move);
     } catch (err) {
       setError((err as Error).message);
@@ -1658,106 +1752,20 @@ export function App() {
     }
   }
 
-  const isTreeSearchType =
-    searchType === 'mcts' || searchType === 'mcts_gpu' || searchType === 'mcts_bootstrap' || searchType === 'ismcts';
-  const usesEvalBatchSize = searchType === 'mcts_gpu' || searchType === 'mcts_bootstrap';
-  const canRunCurrentSearch = (() => {
-    if (searchType === 'alphabeta') {
-      return alphabetaDepth >= 1;
-    }
-    if (searchType === 'forced_child') {
-      return searchSimulations >= 1;
-    }
-    if (searchType === 'mcts_bootstrap') {
-      return (
-        searchSimulations >= 1 &&
-        searchBootstrapSimulationsPerAction >= 1 &&
-        searchEvalBatchSize >= 1 &&
-        searchEvalBatchSize <= MAX_EVAL_BATCH_SIZE
-      );
-    }
-    if (searchType === 'mcts_gpu') {
-      return searchSimulations >= 1 && searchEvalBatchSize >= 1 && searchEvalBatchSize <= MAX_EVAL_BATCH_SIZE;
-    }
-    return searchSimulations >= 1;
-  })();
-  const canRunDeepAnalysisForCurrentSearch = (() => {
-    if (searchType === 'alphabeta') {
-      return alphabetaDepth >= 1;
-    }
-    if (searchType === 'mcts_gpu') {
-      return deepAnalysisSimulations >= 1 && deepAnalysisEvalBatchSize >= 1 && deepAnalysisEvalBatchSize <= MAX_EVAL_BATCH_SIZE;
-    }
-    if (searchType === 'mcts_bootstrap') {
-      return (
-        deepAnalysisSimulations >= 1 &&
-        deepAnalysisBootstrapSimulationsPerAction >= 1 &&
-        deepAnalysisEvalBatchSize >= 1 &&
-        deepAnalysisEvalBatchSize <= MAX_EVAL_BATCH_SIZE
-      );
-    }
-    return deepAnalysisSimulations >= 1;
-  })();
-  const searchSettingsCopy = {
-    alphabeta: {
-      summary: () => `${searchTypeLabel('alphabeta')} • depth ${alphabetaDepth}`,
-      deepAnalysisSettingsLabel: 'Depth',
-      deepAnalysisSettingsTitle: 'Alpha-Beta depth per move',
-      bootstrapSettingsTitle: 'Bootstrap simulations per action',
-    },
-    forced_child: {
-      summary: () => `${searchTypeLabel('forced_child')} • ${searchSimulations.toLocaleString()} per action`,
-      deepAnalysisSettingsLabel: 'Per Action',
-      deepAnalysisSettingsTitle: 'Forced search simulations per action for each move',
-      bootstrapSettingsTitle: 'Bootstrap simulations per action',
-    },
-    ismcts: {
-      summary: () => `${searchTypeLabel('ismcts')} • ${searchSimulations.toLocaleString()} sims`,
-      deepAnalysisSettingsLabel: 'Deep',
-      deepAnalysisSettingsTitle: 'Deep analysis simulations per move',
-      bootstrapSettingsTitle: 'Bootstrap simulations per action',
-    },
-    mcts: {
-      summary: () => (
-        homeView === 'ANALYSIS'
-          ? `${searchTypeLabel('mcts')} • ${searchSimulations.toLocaleString()} total sims • publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} sims`
-          : `${searchTypeLabel('mcts')} • ${searchSimulations.toLocaleString()} sims`
-      ),
-      deepAnalysisSettingsLabel: 'Deep',
-      deepAnalysisSettingsTitle: 'Deep analysis simulations per move',
-      bootstrapSettingsTitle: 'Bootstrap simulations per action',
-    },
-    mcts_gpu: {
-      summary: () => (
-        homeView === 'ANALYSIS'
-          ? `${searchTypeLabel('mcts_gpu')} | ${searchSimulations.toLocaleString()} total sims | publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} | batch ${searchEvalBatchSize.toLocaleString()}`
-          : `${searchTypeLabel('mcts_gpu')} | ${searchSimulations.toLocaleString()} sims | batch ${searchEvalBatchSize.toLocaleString()}`
-      ),
-      deepAnalysisSettingsLabel: 'Deep',
-      deepAnalysisSettingsTitle: 'Deep analysis simulations per move',
-      bootstrapSettingsTitle: 'Bootstrap simulations per action',
-    },
-    mcts_bootstrap: {
-      summary: () => (
-        homeView === 'ANALYSIS'
-          ? `${searchTypeLabel('mcts_bootstrap')} | ${searchSimulations.toLocaleString()} total sims | bootstrap ${searchBootstrapSimulationsPerAction.toLocaleString()} per action | publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} | batch ${searchEvalBatchSize.toLocaleString()}`
-          : `${searchTypeLabel('mcts_bootstrap')} | ${searchSimulations.toLocaleString()} sims | bootstrap ${searchBootstrapSimulationsPerAction.toLocaleString()} per action | batch ${searchEvalBatchSize.toLocaleString()}`
-      ),
-      deepAnalysisSettingsLabel: 'Deep',
-      deepAnalysisSettingsTitle: 'Deep analysis total simulations per move',
-      bootstrapSettingsTitle: 'Bootstrap simulations per legal root action',
-    },
-  } satisfies Record<SearchType, {
-    summary: () => string;
-    deepAnalysisSettingsLabel: string;
-    deepAnalysisSettingsTitle: string;
-    bootstrapSettingsTitle: string;
-  }>;
-  const searchSettingsSummary = searchSettingsCopy[searchType].summary();
-  const deepAnalysisSettingsLabel = searchSettingsCopy[searchType].deepAnalysisSettingsLabel;
-  const deepAnalysisSettingsTitle = searchSettingsCopy[searchType].deepAnalysisSettingsTitle;
-  const bootstrapSettingsTitle = searchSettingsCopy[searchType].bootstrapSettingsTitle;
-  const deepAnalysisBatchSizeTitle = 'Deep analysis evaluation batch size';
+  const canRunCurrentSearch =
+    searchSimulations >= 1 &&
+    searchBootstrapSimulationsPerAction >= 1 &&
+    searchEvalBatchSize >= 1 &&
+    searchEvalBatchSize <= MAX_EVAL_BATCH_SIZE;
+  const canRunDeepAnalysisForCurrentSearch =
+    deepAnalysisSimulations >= 1 &&
+    deepAnalysisBootstrapSimulationsPerAction >= 1 &&
+    deepAnalysisEvalBatchSize >= 1 &&
+    deepAnalysisEvalBatchSize <= MAX_EVAL_BATCH_SIZE;
+  const searchSettingsSummary =
+    `${searchTypeLabel('mcts_bootstrap')} | ${searchSimulations.toLocaleString()} MCTS sims | `
+    + `${searchBootstrapSimulationsPerAction.toLocaleString()} bootstrap sims/action | `
+    + `publish every ${analysisPublishInterval(searchSimulations).toLocaleString()} sims`;
   const activeReveal = useMemo(() => {
     if (!snapshot || !activeRevealKey) {
       return null;
@@ -1845,26 +1853,6 @@ export function App() {
     }
     return null;
   }, [snapshot, activeRevealKey, isSetupLikeView]);
-  const mctsTopAction = useMemo(() => {
-    const details = jobStatus?.result?.action_details;
-    if (!details?.length) return null;
-    let best: typeof details[number] | null = null;
-    for (const action of details) {
-      if (action.masked) continue;
-      if (best == null || action.policy_prob > best.policy_prob) best = action;
-    }
-    return best;
-  }, [jobStatus]);
-  const modelTopAction = useMemo(() => {
-    const details = jobStatus?.result?.model_action_details;
-    if (!details?.length) return null;
-    let best: typeof details[number] | null = null;
-    for (const action of details) {
-      if (action.masked) continue;
-      if (best == null || action.policy_prob > best.policy_prob) best = action;
-    }
-    return best;
-  }, [jobStatus]);
   const currentMainlineMove = useMemo(() => {
     let nextMove: MoveLogEntryDTO | null = null;
     for (const move of moveLogEntries) {
@@ -1891,18 +1879,38 @@ export function App() {
   const preferredAnalysisResult = useMemo<DeepAnalysisSearchResult | EngineJobStatusDTO['result'] | null>(() => {
     return jobStatus?.result ?? currentDeepAnalysisSearch ?? null;
   }, [jobStatus, currentDeepAnalysisSearch]);
+  const isBootstrapAnalysisPhase = jobStatus?.result?.search_type === 'mcts_bootstrap'
+    && jobStatus.result.search_phase === 'bootstrap';
+  const displayedAnalysisResult = isBootstrapAnalysisPhase ? null : preferredAnalysisResult;
+  const analysisSimulationCount = jobStatus?.result?.total_simulations ?? preferredAnalysisResult?.total_simulations ?? null;
+  const totalBootstrapSimulationBudget = searchBootstrapSimulationsPerAction * Math.max(1, snapshot?.legal_actions.length ?? 1);
+  const displayedMctsSimulationCount = analysisSimulationCount == null
+    ? searchSimulations
+    : Math.max(0, analysisSimulationCount - totalBootstrapSimulationBudget);
+  const analysisSimsLabel = `${searchBootstrapSimulationsPerAction.toLocaleString()} each + ${displayedMctsSimulationCount.toLocaleString()} sims`;
   const analysisEvalValue = useMemo<number | null>(() => {
     if (homeView === 'ANALYSIS') {
-      return preferredAnalysisResult?.selected_action_q
-        ?? preferredAnalysisResult?.root_value
+      return displayedAnalysisResult?.selected_action_q
+        ?? displayedAnalysisResult?.root_value
         ?? currentDeepAnalysisEntry?.bestQ
         ?? null;
     }
     return jobStatus?.result?.root_value ?? null;
-  }, [homeView, currentDeepAnalysisEntry, preferredAnalysisResult, jobStatus]);
+  }, [homeView, currentDeepAnalysisEntry, displayedAnalysisResult, jobStatus]);
   const p0EvalValue = useMemo<number | null>(() => {
+    if (snapshot && snapshot.status !== 'IN_PROGRESS' && snapshot.winner >= 0) {
+      return snapshot.winner === 0 ? 1 : -1;
+    }
     return p0WinningEval(analysisEvalValue, snapshot?.player_to_move ?? null);
   }, [analysisEvalValue, snapshot]);
+  const hasDisplayedEval = Boolean(
+    snapshot
+    && (
+      (snapshot.status !== 'IN_PROGRESS' && snapshot.winner >= 0)
+      || displayedAnalysisResult
+      || (homeView === 'ANALYSIS' && currentDeepAnalysisEntry)
+    ),
+  );
   const displayedP0EvalValue = useAnimatedEval(p0EvalValue);
   const evalBarTopHeight = useMemo<number>(() => {
     if (displayedP0EvalValue == null || !Number.isFinite(displayedP0EvalValue)) {
@@ -1922,7 +1930,7 @@ export function App() {
     if (snapshot?.status !== 'IN_PROGRESS') {
       return [];
     }
-    const details = preferredAnalysisResult?.action_details ?? [];
+    const details = displayedAnalysisResult?.action_details ?? [];
     return details
       .filter((detail) => !detail.masked)
       .slice()
@@ -1930,14 +1938,14 @@ export function App() {
         if (b.policy_prob !== a.policy_prob) return b.policy_prob - a.policy_prob;
         return a.action_idx - b.action_idx;
       });
-  }, [preferredAnalysisResult, snapshot?.status]);
+  }, [displayedAnalysisResult, snapshot?.status]);
   const playedAnalysisMove = useMemo(() => {
     if (!currentDeepAnalysisEntry) {
       return null;
     }
-    const details = preferredAnalysisResult?.action_details ?? [];
+    const details = displayedAnalysisResult?.action_details ?? [];
     return details.find((detail) => detail.action_idx === currentDeepAnalysisEntry.playedActionIdx) ?? null;
-  }, [currentDeepAnalysisEntry, preferredAnalysisResult]);
+  }, [currentDeepAnalysisEntry, displayedAnalysisResult]);
   const allAnalysisMoves = useMemo(() => {
     if (uiStatus === 'WAITING_REVEAL') {
       return [];
@@ -1949,7 +1957,7 @@ export function App() {
         .sort((a, b) => a.action_idx - b.action_idx);
     }
 
-    const rankedDetails = preferredAnalysisResult?.action_details ?? [];
+    const rankedDetails = displayedAnalysisResult?.action_details ?? [];
     const scoreByAction = new Map<number, number>();
     rankedDetails.forEach((detail) => {
       if (!detail.masked) {
@@ -1973,11 +1981,16 @@ export function App() {
         }
         return a.action_idx - b.action_idx;
       });
-  }, [preferredAnalysisResult, showBoardAnalysis, snapshot, uiStatus]);
-  const groupedAnalysisMoves = useMemo(() => {
-    const groups: Record<MoveGroupKey, ActionInfoDTO[]> = {
-      buy: [],
-      reserve: [],
+  }, [displayedAnalysisResult, showBoardAnalysis, snapshot, uiStatus]);
+  const groupedAnalysisMoves = useMemo<AnalysisMoveGroup[]>(() => {
+    const groups: Record<string, ActionInfoDTO[]> = {
+      buy_t1: [],
+      buy_t2: [],
+      buy_t3: [],
+      buy_reserved: [],
+      reserve_t1: [],
+      reserve_t2: [],
+      reserve_t3: [],
       take: [],
       return: [],
       noble: [],
@@ -1985,10 +1998,15 @@ export function App() {
     };
     for (const detail of allAnalysisMoves) {
       const idx = detail.action_idx;
-      if (isBuyFaceupAction(idx) || isBuyReservedAction(idx)) {
-        groups.buy.push(detail);
-      } else if (isReserveFaceupAction(idx) || isReserveDeckAction(idx)) {
-        groups.reserve.push(detail);
+      const classified = classifyAction(idx);
+      if (classified.kind === 'buyFaceup') {
+        groups[`buy_t${classified.tier}`].push(detail);
+      } else if (isBuyReservedAction(idx)) {
+        groups.buy_reserved.push(detail);
+      } else if (classified.kind === 'reserveFaceup') {
+        groups[`reserve_t${classified.tier}`].push(detail);
+      } else if (classified.kind === 'reserveDeck') {
+        groups[`reserve_t${classified.tier}`].push(detail);
       } else if (isTake3Action(idx) || isTake2SameAction(idx) || isTake2Action(idx) || isTake1Action(idx)) {
         groups.take.push(detail);
       } else if (isReturnAction(idx)) {
@@ -1999,9 +2017,53 @@ export function App() {
         groups.other.push(detail);
       }
     }
-    return (['buy', 'reserve', 'take', 'return', 'noble', 'other'] as MoveGroupKey[])
-      .map((key) => ({ key, label: MOVE_GROUP_LABELS[key], moves: groups[key] }))
-      .filter((group) => group.moves.length > 0);
+    const moveRank = (detail: ActionInfoDTO): number => {
+      const classified = classifyAction(detail.action_idx);
+      if (classified.kind === 'buyFaceup' || classified.kind === 'reserveFaceup') {
+        return classified.slot;
+      }
+      if (classified.kind === 'reserveDeck') {
+        return 4;
+      }
+      if (classified.kind === 'buyReserved') {
+        return classified.slot;
+      }
+      return detail.action_idx;
+    };
+    Object.values(groups).forEach((moves) => {
+      moves.sort((a, b) => moveRank(a) - moveRank(b) || a.action_idx - b.action_idx);
+    });
+    return [
+      {
+        key: 'buy',
+        label: MOVE_GROUP_LABELS.buy,
+        hideVerb: true,
+        columns: [
+          { key: 'buy_t1', label: 'Tier 1', moves: groups.buy_t1 },
+          { key: 'buy_t2', label: 'Tier 2', moves: groups.buy_t2 },
+          { key: 'buy_t3', label: 'Tier 3', moves: groups.buy_t3 },
+          { key: 'buy_reserved', label: 'Reserved', moves: groups.buy_reserved },
+        ],
+      },
+      {
+        key: 'reserve',
+        label: MOVE_GROUP_LABELS.reserve,
+        hideVerb: true,
+        columns: [
+          { key: 'reserve_t1', label: 'Tier 1', moves: groups.reserve_t1 },
+          { key: 'reserve_t2', label: 'Tier 2', moves: groups.reserve_t2 },
+          { key: 'reserve_t3', label: 'Tier 3', moves: groups.reserve_t3 },
+        ],
+      },
+      { key: 'take', label: MOVE_GROUP_LABELS.take, moves: groups.take, hideVerb: true },
+      { key: 'return', label: MOVE_GROUP_LABELS.return, moves: groups.return, hideVerb: true },
+      { key: 'noble', label: MOVE_GROUP_LABELS.noble, moves: groups.noble, hideVerb: true },
+      { key: 'other', label: MOVE_GROUP_LABELS.other, moves: groups.other, hideVerb: false },
+    ]
+      .map((group) => group.columns
+        ? { ...group, columns: group.columns.filter((column) => column.moves.length > 0) }
+        : group)
+      .filter((group) => group.columns ? group.columns.length > 0 : (group.moves?.length ?? 0) > 0);
   }, [allAnalysisMoves]);
   const movesEmptyMessage = useMemo(() => {
     if (snapshot?.status !== 'IN_PROGRESS') {
@@ -2014,6 +2076,7 @@ export function App() {
     return 'Waiting for search...';
   }, [snapshot, uiStatus]);
   const isMovesGameOverMessage = snapshot?.status !== 'IN_PROGRESS';
+  const isQuickBotThinking = homeView === 'QUICK' && uiStatus === 'WAITING_ENGINE';
   const displayBoard = useMemo(() => {
     if (!snapshot?.board_state) {
       return null;
@@ -2025,8 +2088,8 @@ export function App() {
       if (snapshot.config && !snapshot.config.analysis_mode) {
         return {
           ...player,
-          display_name: player.display_name,
-          role_label: player.seat === snapshot.config.player_seat ? 'You' : 'AhinLendor',
+          display_name: player.seat === snapshot.config.player_seat ? 'You' : 'AhinLendor',
+          role_label: player.display_name,
         };
       }
       const overrideName = loadedPlayerNames?.[player.seat];
@@ -2035,7 +2098,7 @@ export function App() {
       }
       return {
         ...player,
-        role_label: overrideName,
+        display_name: overrideName,
       };
     }) as BoardStateDTO['players'];
 
@@ -2278,10 +2341,10 @@ export function App() {
       if (event.key === 'ArrowUp') {
         event.preventDefault();
         if (snapshotForKeys.current_snapshot_index == null && !isLoadedMainlineExtensionState) {
-          void onJumpToTurn(0, false, !autoAnalyzeOnNavigation);
+          void onJumpToTurn(0, false, false);
           return;
         }
-        void onJumpToSnapshot(0, false, !autoAnalyzeOnNavigation, false);
+        void onJumpToSnapshot(0, false, false, false);
         return;
       }
 
@@ -2292,24 +2355,24 @@ export function App() {
           : (mainlineMoveSnapshotIndices.length > 0 ? mainlineMoveSnapshotIndices[mainlineMoveSnapshotIndices.length - 1] : 0);
         event.preventDefault();
         if (useTurnNavigation) {
-          void onJumpToTurn(finalSnapshotIndex, false, !autoAnalyzeOnNavigation);
+          void onJumpToTurn(finalSnapshotIndex, false, false);
           return;
         }
         if (
           loadedHistoricalMainlineLengthRef.current > 0 &&
           finalSnapshotIndex > loadedHistoricalMainlineTailSnapshotRef.current
         ) {
-          void onJumpToLoadedMainlineExtension(finalSnapshotIndex, !autoAnalyzeOnNavigation);
+          void onJumpToLoadedMainlineExtension(finalSnapshotIndex, false);
           return;
         }
-        void onJumpToSnapshot(finalSnapshotIndex, false, !autoAnalyzeOnNavigation, false);
+        void onJumpToSnapshot(finalSnapshotIndex, false, false, false);
         return;
       }
 
       const delta: -1 | 1 = event.key === 'ArrowLeft' ? -1 : 1;
 
       event.preventDefault();
-      void onStepMainline(delta, !autoAnalyzeOnNavigation);
+      void onStepMainline(delta, false);
     }
 
     window.addEventListener('keydown', onKeyDown);
@@ -2322,7 +2385,6 @@ export function App() {
     isSetupLikeView,
     moveLogEntries.length,
     isDeepAnalysisRunning,
-    autoAnalyzeOnNavigation,
     mainlineMoveSnapshotIndices,
     mainlineMoveTurnIndices,
     currentSnapshotIndex,
@@ -2356,17 +2418,100 @@ export function App() {
 
   const isBoardView = (homeView === 'QUICK' || isSetupLikeView) && snapshot;
 
-  async function onSaveBoardImage(): Promise<void> {
-    if (!displayBoard) {
-      setError('Board is unavailable to export.');
+  function replayFileStem(rawName: string | null, replay: GameReplayDTO): string {
+    const fallback = `ahinlendor-${replay.game_id || 'replay'}`;
+    const trimmed = rawName?.trim() ?? '';
+    const baseName = trimmed.length > 0 ? trimmed : fallback;
+    const sanitized = baseName
+      .replace(/\.(sgr\.)?json$/i, '')
+      .replace(/[^a-z0-9._-]+/gi, '-')
+      .replace(/^-+|-+$/g, '');
+    return sanitized || fallback;
+  }
+
+  function downloadReplayJson(replay: GameReplayDTO, requestedName: string | null): void {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const blob = new Blob([JSON.stringify(replay, null, 2)], { type: 'application/json' });
+    const downloadUrl = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = downloadUrl;
+      anchor.download = `${replayFileStem(requestedName, replay)}-${timestamp}.sgr.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    } finally {
+      URL.revokeObjectURL(downloadUrl);
+    }
+  }
+
+  async function onSaveReplay(): Promise<void> {
+    if (!snapshot) {
+      setError('No analysis game is available to save.');
       return;
     }
-
+    setIsReplaySaving(true);
+    setError(null);
     try {
-      setError(null);
-      await downloadBoardImage(displayBoard);
+      const replay = await fetchJSON<GameReplayDTO>('/api/game/replay');
+      const requestedName = window.prompt('Name this replay', `ahinlendor-${replay.game_id || 'replay'}`);
+      if (requestedName === null) {
+        return;
+      }
+      downloadReplayJson(replay, requestedName);
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setIsReplaySaving(false);
+    }
+  }
+
+  function requestReplayLoad(): void {
+    replayFileInputRef.current?.click();
+  }
+
+  async function onReplayFileSelected(file: File | null): Promise<void> {
+    if (!file) {
+      return;
+    }
+    setIsReplayLoading(true);
+    setError(null);
+    clearPolling();
+    setJobStatus(null);
+    try {
+      const replay = JSON.parse(await file.text()) as GameReplayDTO;
+      const nextSnapshot = await fetchJSON<GameSnapshotDTO>('/api/game/replay/load', {
+        method: 'POST',
+        body: JSON.stringify(replay),
+      });
+      setAnalysisEntryPromptDone(true);
+      setHomeView('ANALYSIS');
+      setRevealSelections({});
+      setActiveRevealKey(null);
+      setLoadedMoveLog(null);
+      loadedHistoricalMainlineLengthRef.current = 0;
+      loadedHistoricalMainlineTailSnapshotRef.current = 0;
+      setLoadedPlayerNames({
+        P0: replay.players?.P0?.name ?? 'Player 1',
+        P1: replay.players?.P1?.name ?? 'Player 2',
+      });
+      setVariationBranches([]);
+      setDeepAnalysisBySnapshot({});
+      setDeepAnalysisSearchBySnapshot({});
+      analysisSearchByPositionRef.current = {};
+      setIsLoadedPostAnalysisGame(true);
+      setDeepAnalysisProgress(null);
+      setIsDeepAnalysisRunning(false);
+      clearActiveVariationSelection();
+      lastAutoAnalyzeKeyRef.current = null;
+      await handleSnapshotUpdate(nextSnapshot, false, null, false);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsReplayLoading(false);
+      if (replayFileInputRef.current) {
+        replayFileInputRef.current.value = '';
+      }
     }
   }
 
@@ -2410,6 +2555,13 @@ export function App() {
   }
   return (
     <main className={`app-shell ${isBoardView ? 'app-shell-board' : ''} ${hideAllExceptBoard ? 'board-only-mode' : ''}`}>
+      <input
+        ref={replayFileInputRef}
+        type="file"
+        accept=".sgr,.json,.sgr.json,application/json"
+        className="replay-file-input"
+        onChange={(event) => void onReplayFileSelected(event.target.files?.[0] ?? null)}
+      />
       {!hideAllExceptBoard && (
         <TopNav
           alphabetaDepth={alphabetaDepth}
@@ -2422,7 +2574,7 @@ export function App() {
           moveCount={moveLogEntries.length}
           onOpenAbout={onOpenAboutView}
           onOpenAnalysis={onOpenManualView}
-          onOpenHome={() => setHomeView('HOME')}
+          onOpenHome={onOpenHomeView}
           onOpenQuick={onOpenQuickView}
           onRunDeepAnalysis={() => void onRunDeepAnalysis()}
           searchType={searchType}
@@ -2434,14 +2586,44 @@ export function App() {
         <HomePage
           onOpenAbout={onOpenAboutView}
           onOpenAnalysis={onOpenManualView}
-          onOpenQuick={onOpenQuickView}
+          onStartQuick={(seat) => void onStartQuickFromHome(seat)}
         />
       )}
 
-      {(homeView === 'QUICK' || isSetupLikeView) && !snapshot && (
+      {homeView === 'ANALYSIS' && !snapshot && !analysisEntryPromptDone && (
+        <section className="panel loading-panel analysis-entry-panel">
+          <h2>Analysis</h2>
+          <p>Start a new analysis board or load an existing replay.</p>
+          <div className="analysis-entry-actions">
+            <button type="button" onClick={() => void startAnalysisGame()} disabled={isAutoStartingGame || isReplayLoading}>
+              New analysis
+            </button>
+            <button type="button" className="secondary-button" onClick={requestReplayLoad} disabled={isAutoStartingGame || isReplayLoading}>
+              {isReplayLoading ? 'Loading...' : 'Load replay'}
+            </button>
+          </div>
+        </section>
+      )}
+
+      {homeView === 'QUICK' && !snapshot && !quickEntryPromptDone && (
+        <section className="panel loading-panel analysis-entry-panel">
+          <h2>Quick Game</h2>
+          <p>Play vs AhinLendor from a random opening. Choose whether to play first or second.</p>
+          <div className="analysis-entry-actions quick-seat-actions">
+            <button type="button" className="quick-seat-button" onClick={() => void startQuickGame('P0')} disabled={isAutoStartingGame}>
+              Play as Player 1
+            </button>
+            <button type="button" className="quick-seat-button" onClick={() => void startQuickGame('P1')} disabled={isAutoStartingGame}>
+              Play as Player 2
+            </button>
+          </div>
+        </section>
+      )}
+
+      {(homeView === 'QUICK' || isSetupLikeView) && !snapshot && (homeView !== 'ANALYSIS' || analysisEntryPromptDone) && (homeView !== 'QUICK' || quickEntryPromptDone) && (
         <section className="panel loading-panel">
           <h2>{homeView === 'QUICK' ? 'Quick Game' : 'Analysis'}</h2>
-          <p>{isAutoStartingGame ? 'Loading board...' : 'Preparing board...'}</p>
+          <p>{isReplayLoading ? 'Loading replay...' : (isAutoStartingGame ? 'Loading board...' : 'Preparing board...')}</p>
         </section>
       )}
 
@@ -2454,15 +2636,14 @@ export function App() {
               showEvaluation={showAnalysisUi && showBoardAnalysis && !hideAllExceptBoard}
               evalBarTopHeight={evalBarTopHeight}
               evalBarBottomHeight={evalBarBottomHeight}
-              evalLabel={evalBarLabel}
+              evalLabel={hasDisplayedEval ? evalBarLabel : null}
               evalSide={evalBarSide}
+              evalUnresolved={!hasDisplayedEval}
             >
                 {displayBoard ? (
                   <GameBoard
                     board={displayBoard}
                     isTerminal={snapshot.status !== 'IN_PROGRESS'}
-                    mctsTopAction={mctsTopAction}
-                    modelTopAction={modelTopAction}
                     onCardClick={onModeBoardCardClick}
                     onNobleClick={onModeBoardNobleClick}
                     onReservedCardClick={onModeReservedCardClick}
@@ -2500,15 +2681,23 @@ export function App() {
               </div>
               {activePanelTab === 'ANALYSIS' && (
                 <div className="analysis-controls-row">
-                <label className="analysis-toggle">
-                  <input
-                    type="checkbox"
-                    checked={showBoardAnalysis}
-                    onChange={(event) => setShowBoardAnalysis(event.target.checked)}
-                  />
-                  <span>Analysis</span>
-                </label>
-                <div className="analysis-settings-wrap" ref={analysisSettingsRef}>
+	                <label className="analysis-toggle">
+	                  <input
+	                    type="checkbox"
+	                    checked={showBoardAnalysis}
+	                    onChange={(event) => setShowBoardAnalysis(event.target.checked)}
+	                  />
+	                  <span>Analysis</span>
+	                </label>
+	                <div className="replay-actions">
+	                  <button type="button" className="secondary-button replay-action-btn" onClick={() => void onSaveReplay()} disabled={!snapshot || isReplaySaving}>
+	                    {isReplaySaving ? 'Saving...' : 'Save'}
+	                  </button>
+	                  <button type="button" className="secondary-button replay-action-btn" onClick={requestReplayLoad} disabled={isReplayLoading}>
+	                    {isReplayLoading ? 'Loading...' : 'Load'}
+	                  </button>
+	                </div>
+	                <div className="analysis-settings-wrap" ref={analysisSettingsRef}>
                   <button
                     type="button"
                     className={`analysis-settings-btn ${showAnalysisSettings ? 'active' : ''}`}
@@ -2517,191 +2706,67 @@ export function App() {
                     aria-haspopup="dialog"
                     onClick={() => setShowAnalysisSettings((value) => !value)}
                   >
-                    <svg className="analysis-settings-icon" viewBox="1 3 22 18" aria-hidden="true">
-                      <path d="M3 6h18M3 12h18M3 18h18" />
-                      <circle cx="8" cy="6" r="1.45" />
-                      <circle cx="16" cy="12" r="1.45" />
-                      <circle cx="10" cy="18" r="1.45" />
-                    </svg>
+                    <span className="analysis-settings-icon" aria-hidden="true">⚙</span>
                   </button>
-                  {showAnalysisSettings && (
-                    <div className="analysis-settings-popover" role="dialog" aria-label="Analysis settings">
-                      {snapshot.status === 'IN_PROGRESS' && (snapshot.config?.analysis_mode || snapshot.player_to_move !== snapshot.config?.player_seat) && (
-                        <div className="analysis-settings-section analysis-search-row">
-                          <select
-                            value={searchType}
-                            onChange={(event) => setSearchType(event.target.value as SearchType)}
-                            aria-label="Search type"
-                          >
-                            <option value="mcts">MCTS</option>
-                            <option value="mcts_gpu">MCTS (GPU batched)</option>
-                            <option value="mcts_bootstrap">MCTS Bootstrap</option>
-                            <option value="ismcts">ISMCTS</option>
-                            <option value="alphabeta">Alpha-Beta</option>
-                            <option value="forced_child">Forced Search</option>
-                          </select>
-                          {isTreeSearchType && (
-                            <input
-                              type="number"
-                              min={1}
-                              max={MAX_SEARCH_SIMULATIONS}
-                              value={searchSimulations}
-                              onChange={(event) => setSearchSimulations(Number(event.target.value))}
-                              aria-label="Search simulations"
-                              title="Search simulations"
-                            />
-                          )}
-                          {searchType === 'alphabeta' && (
-                            <input
-                              type="number"
-                              min={1}
-                              max={64}
-                              value={alphabetaDepth}
-                              onChange={(event) => setAlphabetaDepth(Number(event.target.value))}
-                              aria-label="Alpha-Beta depth"
-                              title="Alpha-Beta search depth"
-                            />
-                          )}
-                          {searchType === 'forced_child' && (
-                            <input
-                              type="number"
-                              min={1}
-                              max={MAX_SEARCH_SIMULATIONS}
-                              value={searchSimulations}
-                              onChange={(event) => setSearchSimulations(Number(event.target.value))}
-                              aria-label="Forced search simulations per action"
-                              title="Forced search simulations per action"
-                            />
-                          )}
-                          {searchType === 'mcts_bootstrap' && (
-                            <input
-                              type="number"
-                              min={1}
-                              max={MAX_SEARCH_SIMULATIONS}
-                              value={searchBootstrapSimulationsPerAction}
-                              onChange={(event) => setSearchBootstrapSimulationsPerAction(Number(event.target.value))}
-                              aria-label="Bootstrap simulations per action"
-                              title={bootstrapSettingsTitle}
-                            />
-                          )}
-                          {usesEvalBatchSize && (
-                            <input
-                              type="number"
-                              min={1}
-                              max={MAX_EVAL_BATCH_SIZE}
-                              value={searchEvalBatchSize}
-                              onChange={(event) => setSearchEvalBatchSize(Number(event.target.value))}
-                              aria-label="Search evaluation batch size"
-                              title="Leaf evaluation batch size"
-                            />
-                          )}
-                          <button
-                            onClick={() => {
-                              void startEngineThink();
-                              setShowAnalysisSettings(false);
-                            }}
-                            disabled={!canRunCurrentSearch || uiStatus === 'WAITING_ENGINE'}
-                          >
-                            Run Search
-                          </button>
-                        </div>
-                      )}
-                      <div className="analysis-settings-section analysis-search-row">
-                        <span>{deepAnalysisSettingsLabel}</span>
-                        {searchType === 'alphabeta' ? (
-                          <input
-                            type="number"
-                            min={1}
-                            max={64}
-                            value={alphabetaDepth}
-                            onChange={(event) => setAlphabetaDepth(Number(event.target.value))}
-                            aria-label="Deep analysis Alpha-Beta depth"
-                            title={deepAnalysisSettingsTitle}
-                          />
-                        ) : (
-                          <input
-                            type="number"
-                            min={1}
-                            max={MAX_SEARCH_SIMULATIONS}
-                            value={deepAnalysisSimulations}
-                            onChange={(event) => setDeepAnalysisSimulations(Number(event.target.value))}
-                            aria-label={searchType === 'forced_child' ? 'Deep analysis forced search simulations per action' : 'Deep analysis simulations'}
-                            title={deepAnalysisSettingsTitle}
-                          />
-                        )}
-                      </div>
-                      {searchType === 'mcts_bootstrap' && (
-                        <div className="analysis-settings-section analysis-search-row">
-                          <span>Bootstrap</span>
-                          <input
-                            type="number"
-                            min={1}
-                            max={MAX_SEARCH_SIMULATIONS}
-                            value={deepAnalysisBootstrapSimulationsPerAction}
-                            onChange={(event) => setDeepAnalysisBootstrapSimulationsPerAction(Number(event.target.value))}
-                            aria-label="Deep analysis bootstrap simulations per action"
-                            title="Bootstrap simulations per legal root action for each deep-analysis search"
-                          />
-                        </div>
-                      )}
-                      {usesEvalBatchSize && (
-                        <div className="analysis-settings-section analysis-search-row">
-                          <span>Batch</span>
-                          <input
-                            type="number"
-                            min={1}
-                            max={MAX_EVAL_BATCH_SIZE}
-                            value={deepAnalysisEvalBatchSize}
-                            onChange={(event) => setDeepAnalysisEvalBatchSize(Number(event.target.value))}
-                            aria-label="Deep analysis evaluation batch size"
-                            title={deepAnalysisBatchSizeTitle}
-                          />
-                        </div>
-                      )}
-                      <div className="analysis-settings-section">
-                        <label className="analysis-toggle">
-                          <input
-                            type="checkbox"
-                            checked={hideAllExceptBoard}
-                            onChange={(event) => {
-                              const nextValue = event.target.checked;
-                              setHideAllExceptBoard(nextValue);
-                              if (nextValue) {
-                                setShowAnalysisSettings(false);
-                              }
-                            }}
-                          />
-                          <span>Hide all except board</span>
-                        </label>
-                      </div>
-                      <div className="analysis-settings-section">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void onSaveBoardImage();
-                            setShowAnalysisSettings(false);
-                          }}
-                          disabled={!displayBoard}
-                        >
-                          Save board image
-                        </button>
-                      </div>
-                    </div>
-                  )}
+	                  {showAnalysisSettings && (
+	                    <div className="analysis-settings-popover" role="dialog" aria-label="Analysis settings">
+	                      <label className="analysis-settings-field">
+	                        <span>MCTS sims</span>
+	                        <input
+	                          type="number"
+	                          min={1}
+	                          max={MAX_SEARCH_SIMULATIONS}
+	                          value={searchSimulations}
+	                          onChange={(event) => setSearchSimulations(Number(event.target.value))}
+	                          aria-label="MCTS simulations"
+	                        />
+	                      </label>
+	                      <label className="analysis-settings-field">
+	                        <span>Bootstrap sims</span>
+	                        <input
+	                          type="number"
+	                          min={1}
+	                          max={MAX_SEARCH_SIMULATIONS}
+	                          value={searchBootstrapSimulationsPerAction}
+	                          onChange={(event) => setSearchBootstrapSimulationsPerAction(Number(event.target.value))}
+	                          aria-label="Bootstrap simulations"
+	                        />
+	                      </label>
+	                      <button
+	                        type="button"
+	                        className="analysis-settings-run-btn"
+	                        onClick={() => {
+	                          void startEngineThink({ searchTypeOverride: 'mcts_bootstrap' });
+	                          setShowAnalysisSettings(false);
+	                        }}
+	                        disabled={!canRunCurrentSearch || uiStatus === 'WAITING_ENGINE'}
+	                      >
+	                        Run Search
+	                      </button>
+	                    </div>
+	                  )}
                 </div>
                 </div>
               )}
               {activePanelTab === 'MOVES' && showAnalysisUi && (
                 <div className="analysis-controls-row">
-                  <label className="analysis-toggle">
-                    <input
-                      type="checkbox"
-                      checked={showBoardAnalysis}
-                      onChange={(event) => setShowBoardAnalysis(event.target.checked)}
-                    />
-                    <span>Analysis</span>
-                  </label>
-                </div>
+	                  <label className="analysis-toggle">
+	                    <input
+	                      type="checkbox"
+	                      checked={showBoardAnalysis}
+	                      onChange={(event) => setShowBoardAnalysis(event.target.checked)}
+	                    />
+	                    <span>Analysis</span>
+	                  </label>
+	                  <div className="replay-actions">
+	                    <button type="button" className="secondary-button replay-action-btn" onClick={() => void onSaveReplay()} disabled={!snapshot || isReplaySaving}>
+	                      {isReplaySaving ? 'Saving...' : 'Save'}
+	                    </button>
+	                    <button type="button" className="secondary-button replay-action-btn" onClick={requestReplayLoad} disabled={isReplayLoading}>
+	                      {isReplayLoading ? 'Loading...' : 'Load'}
+	                    </button>
+	                  </div>
+	                </div>
               )}
               {jobStatus?.error && <p className="error">Engine error: {jobStatus.error}</p>}
               <div className="analysis-panel-body">
@@ -2741,11 +2806,22 @@ export function App() {
                       )}
                       {snapshot?.status === 'IN_PROGRESS' && (
                         <>
-                          <div className="analysis-section-header">Top moves</div>
+                          <div className="analysis-section-header analysis-section-header-row">
+                            <span>Top moves</span>
+                            <span className="analysis-sims-count">{analysisSimsLabel}</span>
+                          </div>
                           <div className="analysis-top-moves-list" role="list">
                           {topAnalysisMoves.length === 0 ? (
-                            <div className="analysis-line placeholder" role="listitem">
-                              <div className="analysis-line-name">{uiStatus === 'WAITING_REVEAL' ? 'Waiting for setup...' : 'Waiting for search...'}</div>
+                            <div className="thinking-status" role="listitem">
+                              {uiStatus === 'WAITING_REVEAL' ? (
+                                'Waiting for setup...'
+                              ) : isBootstrapAnalysisPhase || uiStatus === 'WAITING_ENGINE' ? (
+                                <>
+                                  Analyzing<span className="thinking-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
+                                </>
+                              ) : (
+                                'Waiting for search...'
+                              )}
                             </div>
                           ) : topAnalysisMoves.map((detail) => {
                             const absoluteEval = detail
@@ -2781,11 +2857,20 @@ export function App() {
                           </div>
                         </>
                       )}
+                      {snapshot?.status !== 'IN_PROGRESS' && (
+                        <div className="analysis-line analysis-panel-empty analysis-panel-game-over" role="listitem">
+                          {movesEmptyMessage}
+                        </div>
+                      )}
                   </div>
                 )}
                 {activePanelTab === 'MOVES' && (
                   <div className="analysis-move-groups" role="list">
-                    {uiStatus === 'WAITING_REVEAL' ? null : allAnalysisMoves.length === 0 ? (
+                    {isQuickBotThinking ? (
+                      <div className="thinking-status quick-thinking-status" role="listitem">
+                        AhinLendor is thinking<span className="thinking-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
+                      </div>
+                    ) : uiStatus === 'WAITING_REVEAL' ? null : allAnalysisMoves.length === 0 ? (
                       <div
                         className={`analysis-line analysis-panel-empty ${isMovesGameOverMessage ? 'analysis-panel-game-over' : 'placeholder'}`}
                         role="listitem"
@@ -2796,31 +2881,64 @@ export function App() {
                       groupedAnalysisMoves.map((group) => (
                         <section key={`move-group-${group.key}`} className={`analysis-move-group analysis-move-group-${group.key}`} aria-label={`${group.label} moves`}>
                           <div className="analysis-move-group-title">{group.label}</div>
-                          <div className="analysis-moves-list" role="list">
-                            {group.moves.map((detail) => {
-                              return (
-                                <button
-                                  key={`analysis-move-${detail.action_idx}`}
-                                  type="button"
-                                  className="analysis-line analysis-line-button analysis-line-move-only"
-                                  role="listitem"
-                                  disabled={!canSubmitPlayerMove(snapshot)}
-                                  onClick={() => {
-                                    void onSelectModeAction(detail.action_idx);
-                                  }}
-                                >
-                                  <div className="analysis-line-name">
-                                    <ActionLabel
-                                      actionIdx={detail.action_idx}
-                                      display={detail.display ?? null}
-                                      board={displayBoard ?? snapshot?.board_state ?? null}
-                                      hideVerb={group.key !== 'other'}
-                                    />
+                          {group.columns ? (
+                            <div className="analysis-move-columns">
+                              {group.columns.map((column) => (
+                                <div key={`move-column-${column.key}`} className="analysis-move-column">
+                                  <div className="analysis-move-column-title">{column.label}</div>
+                                  <div className="analysis-moves-list" role="list">
+                                    {column.moves.map((detail) => (
+                                      <button
+                                        key={`analysis-move-${detail.action_idx}`}
+                                        type="button"
+                                        className="analysis-line analysis-line-button analysis-line-move-only"
+                                        role="listitem"
+                                        disabled={!canSubmitPlayerMove(snapshot)}
+                                        onClick={() => {
+                                          void onSelectModeAction(detail.action_idx);
+                                        }}
+                                      >
+                                        <div className="analysis-line-name">
+                                          <ActionLabel
+                                            actionIdx={detail.action_idx}
+                                            display={detail.display ?? null}
+                                            board={displayBoard ?? snapshot?.board_state ?? null}
+                                            hideVerb={group.hideVerb}
+                                          />
+                                        </div>
+                                      </button>
+                                    ))}
                                   </div>
-                                </button>
-                              );
-                            })}
-                          </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="analysis-moves-list" role="list">
+                              {(group.moves ?? []).map((detail) => {
+                                return (
+                                  <button
+                                    key={`analysis-move-${detail.action_idx}`}
+                                    type="button"
+                                    className="analysis-line analysis-line-button analysis-line-move-only"
+                                    role="listitem"
+                                    disabled={!canSubmitPlayerMove(snapshot)}
+                                    onClick={() => {
+                                      void onSelectModeAction(detail.action_idx);
+                                    }}
+                                  >
+                                    <div className="analysis-line-name">
+                                      <ActionLabel
+                                        actionIdx={detail.action_idx}
+                                        display={detail.display ?? null}
+                                        board={displayBoard ?? snapshot?.board_state ?? null}
+                                        hideVerb={group.hideVerb}
+                                      />
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
                         </section>
                       ))
                     )}
@@ -3073,6 +3191,14 @@ export function App() {
       )}
 
       {error && <section className="panel error">Error: {error}</section>}
+      {!hideAllExceptBoard && (
+        <footer className="feedback-footer">
+          Found a bug or have an idea?{' '}
+          <a href="mailto:ahinlab0@gmail.com?subject=AhinLendor%20feedback&body=What%20happened:%0D%0A%0D%0AWhat%20I%20expected:%0D%0A%0D%0A(Bug%20or%20feature%20idea?)">
+            Email me
+          </a>
+        </footer>
+      )}
     </main>
   );
 }

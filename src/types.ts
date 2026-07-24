@@ -148,6 +148,7 @@ export interface EngineJobStatusDTO {
   result?: {
     action_idx: number;
     search_type?: SearchType;
+    search_phase?: 'bootstrap' | 'mcts' | 'complete';
     action_details: ActionVizDTO[];
     model_action_details?: ActionVizDTO[] | null;
     root_value?: number | null;
@@ -192,6 +193,39 @@ export interface PendingRevealDTO {
   reason: 'initial_setup' | 'replacement_after_buy' | 'replacement_after_reserve' | 'reserved_from_deck' | 'initial_noble_setup';
   actor?: Seat | null;
   action_idx?: number | null;
+}
+
+export interface GameReplayDTO {
+  format: 'sgr';
+  version: 1;
+  game_id: string;
+  created_at: string;
+  catalog_version: 'standard-90-card-10-noble-v1';
+  players: Record<Seat, { name: string }>;
+  rules: {
+    target_points: number;
+    num_players: number;
+  };
+  setup: {
+    faceup_cards: Record<number, number[]>;
+    nobles: number[];
+  };
+  events: CompactReplayEventDTO[];
+  result: {
+    status: 'COMPLETED' | 'RESIGNED' | 'ABANDONED';
+    winner: Seat | null;
+    final_turn_index: number;
+  };
+}
+
+export interface CompactReplayEventDTO {
+  k: 'm' | 'rc' | 'rr' | 'rn' | 'rs';
+  a?: number | null;
+  p?: Seat | null;
+  t?: number | null;
+  s?: number | null;
+  c?: number | null;
+  n?: number | null;
 }
 
 export interface CatalogCardDTO {

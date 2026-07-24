@@ -1,25 +1,41 @@
 import { UiIcon } from '../UiIcon';
+import type { Seat } from '../../types';
 
 export function HomePage({
   onOpenAbout,
   onOpenAnalysis,
-  onOpenQuick,
+  onStartQuick,
 }: {
   onOpenAbout: () => void;
   onOpenAnalysis: () => void;
-  onOpenQuick: () => void;
+  onStartQuick: (seat: Seat) => void;
 }) {
   return (
     <section className="home-landing">
-      <div className="home-hero">
+      <section className="home-github-intro">
         <h2>AhinLendor</h2>
-      </div>
+        <p>
+          AhinLendor is a superhuman AlphaZero-style Splendor AI that reached Rank 1 on the Spendee leaderboard
+          and won exhibition matches against top-ranked human players.
+        </p>
+        <a href="https://github.com/inhabae/AhinLendor" target="_blank" rel="noreferrer">
+          View the project on GitHub
+        </a>
+      </section>
       <div className="home-mode-grid">
-        <button type="button" className="home-mode-card" onClick={onOpenQuick}>
+        <section className="home-mode-card home-mode-card-static">
           <UiIcon name="play" />
           <strong>Quick Game</strong>
-          <span>Engine vs human from a random opening.</span>
-        </button>
+          <span>Play vs AhinLendor from a random opening.</span>
+          <div className="analysis-entry-actions home-mode-actions quick-seat-actions">
+            <button type="button" className="quick-seat-button" onClick={() => onStartQuick('P0')}>
+              Play as Player 1
+            </button>
+            <button type="button" className="quick-seat-button" onClick={() => onStartQuick('P1')}>
+              Play as Player 2
+            </button>
+          </div>
+        </section>
         <button type="button" className="home-mode-card" onClick={onOpenAnalysis}>
           <UiIcon name="analysis" />
           <strong>Analysis</strong>

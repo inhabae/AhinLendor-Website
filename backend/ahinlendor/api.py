@@ -71,6 +71,9 @@ REPO_ROOT = Path(os.environ.get("AHINLENDOR_ENGINE_ROOT", str(APP_ROOT))).expand
 CHECKPOINT_DIR = Path(os.environ.get("AHINLENDOR_CHECKPOINT_DIR", str(APP_ROOT / "data" / "checkpoints"))).expanduser().resolve()
 DEFAULT_CHECKPOINT = os.environ.get("AHINLENDOR_DEFAULT_CHECKPOINT", "train_1773766638_123_resume_cycle_1405.pt")
 WEB_DIST_DIR = Path(os.environ.get("AHINLENDOR_WEB_DIST_DIR", str(APP_ROOT / "dist"))).expanduser().resolve()
+GAME_REPLAY_FORMAT = "sgr"
+GAME_REPLAY_VERSION = 1
+STANDARD_CATALOG_VERSION = "standard-90-card-10-noble-v1"
 _STANDARD_CARD_TIER_BY_ID = {
     int(card["id"]): int(card["tier"])
     for card in list_standard_cards()
@@ -249,15 +252,15 @@ class JumpToSnapshotRequest(BaseModel):
 
 
 class EngineThinkRequest(BaseModel):
-    num_simulations: int | None = Field(default=None, ge=1, le=1000000)
+    num_simulations: int | None = Field(default=None, ge=1, le=5000000)
     search_type: Literal["mcts", "mcts_gpu", "mcts_bootstrap", "ismcts", "alphabeta", "forced_child"] = "mcts"
     continuous_until_cancel: bool = False
-    max_total_simulations: int | None = Field(default=None, ge=1, le=1000000)
+    max_total_simulations: int | None = Field(default=None, ge=1, le=5000000)
     eval_batch_size: int | None = Field(default=None, ge=1, le=1024)
     forced_root_action_idx: int | None = Field(default=None, ge=0, lt=ACTION_DIM)
     alphabeta_depth: int | None = Field(default=None, ge=1, le=64)
-    forced_child_simulations_per_action: int | None = Field(default=None, ge=1, le=1000000)
-    bootstrap_simulations_per_action: int | None = Field(default=None, ge=1, le=1000000)
+    forced_child_simulations_per_action: int | None = Field(default=None, ge=1, le=5000000)
+    bootstrap_simulations_per_action: int | None = Field(default=None, ge=1, le=5000000)
 
 
 class RevealCardRequest(BaseModel):
@@ -295,6 +298,7 @@ class RevealCardResponse(BaseModel):
 class EngineResultDTO(BaseModel):
     action_idx: int
     search_type: Literal["mcts", "mcts_gpu", "mcts_bootstrap", "ismcts", "alphabeta", "forced_child"] = "mcts"
+    search_phase: Literal["bootstrap", "mcts", "complete"] = "complete"
     action_details: list[ActionVizDTO] = Field(default_factory=list)
     model_action_details: list[ActionVizDTO] | None = None
     root_value: float | None = None
@@ -340,6 +344,49 @@ class SavedGameDTO(BaseModel):
     config: GameConfigDTO
     snapshots: list[SavedStateDTO] = Field(default_factory=list)
     current_index: int = Field(default=0, ge=0)
+
+
+class ReplayPlayerDTO(BaseModel):
+    name: str
+
+
+class ReplayRulesDTO(BaseModel):
+    target_points: int = 15
+    num_players: int = 2
+
+
+class ReplaySetupDTO(BaseModel):
+    faceup_cards: dict[int, list[int]] = Field(default_factory=dict)
+    nobles: list[int] = Field(default_factory=list)
+
+
+class CompactReplayEventDTO(BaseModel):
+    k: Literal["m", "rc", "rr", "rn", "rs"]
+    a: int | None = None
+    p: Literal["P0", "P1"] | None = None
+    t: int | None = None
+    s: int | None = None
+    c: int | None = None
+    n: int | None = None
+
+
+class ReplayResultDTO(BaseModel):
+    status: Literal["COMPLETED", "RESIGNED", "ABANDONED"]
+    winner: Literal["P0", "P1"] | None = None
+    final_turn_index: int = Field(ge=0)
+
+
+class GameReplayDTO(BaseModel):
+    format: Literal["sgr"] = GAME_REPLAY_FORMAT
+    version: int = GAME_REPLAY_VERSION
+    game_id: str
+    created_at: str
+    catalog_version: str = STANDARD_CATALOG_VERSION
+    players: dict[Literal["P0", "P1"], ReplayPlayerDTO]
+    rules: ReplayRulesDTO
+    setup: ReplaySetupDTO
+    events: list[CompactReplayEventDTO] = Field(default_factory=list)
+    result: ReplayResultDTO
 
 
 class CatalogCardDTO(BaseModel):
@@ -415,6 +462,7 @@ class EngineJob:
     selected_action_q: float | None = None
     total_simulations: int = 0
     search_type: Literal["mcts", "mcts_gpu", "mcts_bootstrap", "ismcts", "alphabeta", "forced_child"] = "mcts"
+    search_phase: Literal["bootstrap", "mcts", "complete"] = "complete"
     forced_root_action_idx: int | None = None
     started_at: float | None = None
     last_publish_at: float | None = None
@@ -643,6 +691,100 @@ def _initial_setup_pending_reveals() -> list[PendingReveal]:
             )
         )
     return pending
+
+
+def _compact_event_from_game_event(event: GameEvent) -> CompactReplayEventDTO:
+    if event.kind == "move":
+        if event.action_idx is None:
+            raise HTTPException(status_code=500, detail="Cannot export corrupt move event")
+        return CompactReplayEventDTO(k="m", a=int(event.action_idx))
+    if event.kind == "reveal_card":
+        if event.tier is None or event.slot is None or event.card_id is None:
+            raise HTTPException(status_code=500, detail="Cannot export corrupt face-up reveal event")
+        return CompactReplayEventDTO(k="rc", t=int(event.tier), s=int(event.slot), c=int(event.card_id))
+    if event.kind == "reveal_reserved_card":
+        if event.actor is None or event.slot is None or event.card_id is None:
+            raise HTTPException(status_code=500, detail="Cannot export corrupt reserved reveal event")
+        tier = _STANDARD_CARD_TIER_BY_ID.get(int(event.card_id))
+        return CompactReplayEventDTO(
+            k="rr",
+            p=event.actor,
+            t=int(tier) if tier is not None else event.tier,
+            s=int(event.slot),
+            c=int(event.card_id),
+        )
+    if event.kind == "reveal_noble":
+        if event.slot is None or event.noble_id is None:
+            raise HTTPException(status_code=500, detail="Cannot export corrupt noble reveal event")
+        return CompactReplayEventDTO(k="rn", s=int(event.slot), n=int(event.noble_id))
+    if event.kind == "resign":
+        return CompactReplayEventDTO(k="rs")
+    raise HTTPException(status_code=500, detail=f"Cannot export unknown event kind: {event.kind}")
+
+
+def _game_event_from_compact_event(event: CompactReplayEventDTO, actor: Literal["P0", "P1"] | None = None) -> GameEvent:
+    if event.k == "m":
+        if event.a is None:
+            raise HTTPException(status_code=400, detail="Replay move event is missing action index")
+        if actor is None:
+            raise HTTPException(status_code=400, detail="Replay move event cannot be applied without an actor")
+        return GameEvent(kind="move", actor=actor, action_idx=int(event.a))
+    if event.k == "rc":
+        if event.t is None or event.s is None or event.c is None:
+            raise HTTPException(status_code=400, detail="Replay face-up reveal is missing tier, slot, or card")
+        return GameEvent(kind="reveal_card", tier=int(event.t), slot=int(event.s), card_id=int(event.c))
+    if event.k == "rr":
+        if event.p is None or event.s is None or event.c is None:
+            raise HTTPException(status_code=400, detail="Replay reserved reveal is missing player, slot, or card")
+        return GameEvent(kind="reveal_reserved_card", actor=event.p, tier=event.t, slot=int(event.s), card_id=int(event.c))
+    if event.k == "rn":
+        if event.s is None or event.n is None:
+            raise HTTPException(status_code=400, detail="Replay noble reveal is missing slot or noble")
+        return GameEvent(kind="reveal_noble", slot=int(event.s), noble_id=int(event.n))
+    if event.k == "rs":
+        return GameEvent(kind="resign")
+    raise HTTPException(status_code=400, detail=f"Unknown replay event kind: {event.k}")
+
+
+def _replay_setup_from_events(events: list[GameEvent]) -> ReplaySetupDTO:
+    faceup: dict[int, list[int | None]] = {1: [None, None, None, None], 2: [None, None, None, None], 3: [None, None, None, None]}
+    nobles: list[int | None] = [None, None, None]
+    for event in events:
+        if event.kind == "reveal_card" and event.tier in (1, 2, 3) and event.slot in (0, 1, 2, 3) and event.card_id is not None:
+            faceup[int(event.tier)][int(event.slot)] = int(event.card_id)
+        elif event.kind == "reveal_noble" and event.slot in (0, 1, 2) and event.noble_id is not None:
+            nobles[int(event.slot)] = int(event.noble_id)
+
+    return ReplaySetupDTO(
+        faceup_cards={
+            tier: [int(card_id) for card_id in cards if card_id is not None]
+            for tier, cards in faceup.items()
+        },
+        nobles=[int(noble_id) for noble_id in nobles if noble_id is not None],
+    )
+
+
+def _setup_events_from_replay_setup(setup: ReplaySetupDTO) -> list[GameEvent]:
+    events: list[GameEvent] = []
+    for tier in (1, 2, 3):
+        cards = setup.faceup_cards.get(tier) or setup.faceup_cards.get(str(tier)) or []
+        if len(cards) != 4:
+            raise HTTPException(status_code=400, detail=f"Replay setup tier {tier} must contain exactly 4 face-up cards")
+        for slot, card_id in enumerate(cards):
+            events.append(GameEvent(kind="reveal_card", tier=tier, slot=slot, card_id=int(card_id)))
+    if len(setup.nobles) != 3:
+        raise HTTPException(status_code=400, detail="Replay setup must contain exactly 3 nobles")
+    for slot, noble_id in enumerate(setup.nobles):
+        events.append(GameEvent(kind="reveal_noble", slot=slot, noble_id=int(noble_id)))
+    return events
+
+
+def _winner_seat_from_int(winner: int | None) -> Literal["P0", "P1"] | None:
+    if winner == 0:
+        return "P0"
+    if winner == 1:
+        return "P1"
+    return None
 
 
 def _placement_hint_for_action(action_idx: int) -> PlacementHintDTO:
@@ -2514,6 +2656,99 @@ class GameManager:
             self._loaded_move_log_full = list(self._move_log)
             return self._snapshot_locked()
 
+    def export_replay(self) -> GameReplayDTO:
+        with self._lock:
+            env, config, game_id = self._require_game_locked()
+            setup = _replay_setup_from_events(self._setup_event_log)
+            if any(len(setup.faceup_cards.get(tier, [])) != 4 for tier in (1, 2, 3)) or len(setup.nobles) != 3:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Current game has no complete public setup; use manual reveal mode before exporting SGR",
+                )
+            step = env.get_state()
+            if self._forced_status == "RESIGNED":
+                result_status: Literal["COMPLETED", "RESIGNED", "ABANDONED"] = "RESIGNED"
+            elif bool(step.is_terminal) or self._forced_winner is not None:
+                result_status = "COMPLETED"
+            else:
+                result_status = "ABANDONED"
+            winner = _winner_seat_from_int(self._forced_winner if self._forced_winner is not None else int(step.winner))
+            return GameReplayDTO(
+                game_id=game_id,
+                created_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                players={
+                    "P0": ReplayPlayerDTO(name=_seat_display_str("P0")),
+                    "P1": ReplayPlayerDTO(name=_seat_display_str("P1")),
+                },
+                rules=ReplayRulesDTO(target_points=15, num_players=2),
+                setup=setup,
+                events=[_compact_event_from_game_event(event) for event in self._event_log],
+                result=ReplayResultDTO(
+                    status=result_status,
+                    winner=winner,
+                    final_turn_index=int(self._turn_index),
+                ),
+            )
+
+    def load_replay(self, replay: GameReplayDTO) -> GameSnapshotDTO:
+        with self._lock:
+            if replay.format != GAME_REPLAY_FORMAT:
+                raise HTTPException(status_code=400, detail="Unsupported replay format")
+            if int(replay.version) != GAME_REPLAY_VERSION:
+                raise HTTPException(status_code=400, detail="Unsupported replay version")
+            if replay.catalog_version != STANDARD_CATALOG_VERSION:
+                raise HTTPException(status_code=400, detail="Unsupported replay catalog_version")
+
+            checkpoint = _default_checkpoint()
+            seed = 0
+            self._cancel_all_engine_jobs_locked()
+            env = self._ensure_env_locked()
+            env.reset(seed=seed)
+            self._game_id = replay.game_id or str(uuid.uuid4())
+            self._config = GameConfig(
+                checkpoint_id=checkpoint.id,
+                checkpoint_path=Path(checkpoint.path),
+                num_simulations=400,
+                player_seat="P0",
+                seed=seed,
+                manual_reveal_mode=True,
+                analysis_mode=True,
+            )
+            self._turn_index = 0
+            self._move_log = []
+            self._rng = random.Random(seed)
+            self._determinization_seed = random.randint(0, 2**31 - 1)
+            self._forced_winner = None
+            self._forced_status = None
+            self._pending_reveals = _initial_setup_pending_reveals()
+            self._setup_event_log = _setup_events_from_replay_setup(replay.setup)
+            self._event_log = []
+            self._redo_log = []
+            self._loaded_snapshot_history = []
+            self._loaded_move_log_full = []
+            self._clear_snapshot_history_locked()
+
+            for event in self._setup_event_log:
+                self._apply_event_locked(env, event)
+
+            for compact_event in replay.events:
+                actor: Literal["P0", "P1"] | None = None
+                if compact_event.k == "m":
+                    actor = _seat_str(env.get_state().current_player_id)
+                event = _game_event_from_compact_event(compact_event, actor)
+                self._apply_event_locked(env, event)
+                self._event_log.append(event)
+
+            if int(replay.result.final_turn_index) != int(self._turn_index):
+                raise HTTPException(status_code=400, detail="Replay final_turn_index does not match reconstructed events")
+            if replay.result.status == "RESIGNED":
+                self._forced_status = "RESIGNED"
+                self._forced_winner = 0 if replay.result.winner == "P0" else 1 if replay.result.winner == "P1" else None
+            elif replay.result.status == "COMPLETED" and not bool(env.get_state().is_terminal):
+                raise HTTPException(status_code=400, detail="Replay result says completed but replay is not terminal")
+
+            return self._snapshot_locked()
+
     def _is_player_turn_locked(self, step: StepState, config: GameConfig) -> bool:
         return _seat_str(step.current_player_id) == config.player_seat
 
@@ -2618,7 +2853,11 @@ class GameManager:
                 ),
                 None,
             )
-            env.set_faceup_card(event.tier - 1, event.slot, event.card_id)
+            allow_setup_edit = self._has_initial_setup_pending_locked()
+            if allow_setup_edit:
+                env.set_faceup_card_any(event.tier - 1, event.slot, event.card_id)
+            else:
+                env.set_faceup_card(event.tier - 1, event.slot, event.card_id)
             if pending_index is not None:
                 self._pending_reveals.pop(pending_index)
             return
@@ -2856,7 +3095,13 @@ class GameManager:
                             raise RuntimeError("Engine job cancelled")
                         return cur_job
 
-                    def _publish_tree_result(tree_result: Any, *, total_sims: int, finalize: bool) -> int:
+                    def _publish_tree_result(
+                        tree_result: Any,
+                        *,
+                        total_sims: int,
+                        finalize: bool,
+                        phase: Literal["bootstrap", "mcts", "complete"] = "complete",
+                    ) -> int:
                         policy = np.asarray(tree_result.visit_probs, dtype=np.float32)
                         q_values = np.asarray(tree_result.q_values, dtype=np.float32)
                         selected_action_idx = int(_best_legal_action(search_step.mask, policy))
@@ -2902,6 +3147,7 @@ class GameManager:
                             cur_job.selected_action_q = float(selected_action_q)
                             cur_job.total_simulations = int(total_sims)
                             cur_job.search_type = normalized_search_type
+                            cur_job.search_phase = phase
                             cur_job.model_action_details = model_action_details
                             cur_job.last_publish_at = time.time()
                             if finalize:
@@ -2977,7 +3223,7 @@ class GameManager:
                                     result = session.advance(int(action_budget), forced_root_action_idx=int(action_idx))
                                     total_simulations = int(session.simulations_completed)
                                     if continuous_until_cancel:
-                                        _publish_tree_result(result, total_sims=total_simulations, finalize=False)
+                                        _publish_tree_result(result, total_sims=total_simulations, finalize=False, phase="bootstrap")
                                 # After bootstrap phase, run the latter MCTS phase whose
                                 # budget is `search_budget` (user num_simulations).
                                 total_target = int(bootstrap_total_budget) + int(search_budget)
@@ -2991,7 +3237,7 @@ class GameManager:
                                             sims_left = int(total_target) - int(session.simulations_completed)
                                             result = session.advance(min(chunk_size, sims_left))
                                             total_simulations = int(session.simulations_completed)
-                                            _publish_tree_result(result, total_sims=total_simulations, finalize=False)
+                                            _publish_tree_result(result, total_sims=total_simulations, finalize=False, phase="mcts")
                                     else:
                                         result = session.advance(int(sims_left))
                                         total_simulations = int(session.simulations_completed)
@@ -3016,7 +3262,7 @@ class GameManager:
                                 sims_left = int(search_budget) - int(session.simulations_completed)
                                 result = session.advance(min(chunk_size, sims_left))
                                 total_simulations = int(session.simulations_completed)
-                                _publish_tree_result(result, total_sims=total_simulations, finalize=False)
+                                _publish_tree_result(result, total_sims=total_simulations, finalize=False, phase="mcts")
                             if result is None:
                                 raise RuntimeError("Engine search finished without a result")
                         else:
@@ -3143,6 +3389,7 @@ class GameManager:
                             result,
                             total_sims=(0 if total_simulations is None else int(total_simulations)),
                             finalize=True,
+                            phase="complete",
                         )
 
                     q_values = deterministic_q_values
@@ -3175,6 +3422,7 @@ class GameManager:
                         cur_job.selected_action_q = float(selected_action_q)
                         cur_job.total_simulations = 0 if total_simulations is None else total_simulations
                         cur_job.search_type = normalized_search_type
+                        cur_job.search_phase = "complete"
                         cur_job.model_action_details = None
                         cur_job.last_publish_at = time.time()
                         cur_job.status = "DONE"
@@ -3203,6 +3451,7 @@ class GameManager:
                 EngineResultDTO(
                     action_idx=job.action_idx,
                     search_type=job.search_type,
+                    search_phase=job.search_phase,
                     action_details=job.action_details or [],
                     model_action_details=job.model_action_details,
                     root_value=job.root_value,
@@ -3265,7 +3514,11 @@ class GameManager:
                 ),
                 None,
             )
-            env.set_faceup_card(req.tier - 1, req.slot, req.card_id)
+            allow_setup_edit = self._has_initial_setup_pending_locked()
+            if allow_setup_edit:
+                env.set_faceup_card_any(req.tier - 1, req.slot, req.card_id)
+            else:
+                env.set_faceup_card(req.tier - 1, req.slot, req.card_id)
 
             if pending_index is not None:
                 self._pending_reveals.pop(pending_index)
@@ -3545,6 +3798,16 @@ def game_save() -> SavedGameDTO:
 @app.post("/api/game/load", response_model=GameSnapshotDTO)
 def game_load(saved: SavedGameDTO) -> GameSnapshotDTO:
     return manager.load_game(saved)
+
+
+@app.get("/api/game/replay", response_model=GameReplayDTO, response_model_exclude_none=True)
+def game_replay_export() -> GameReplayDTO:
+    return manager.export_replay()
+
+
+@app.post("/api/game/replay/load", response_model=GameSnapshotDTO)
+def game_replay_load(replay: GameReplayDTO) -> GameSnapshotDTO:
+    return manager.load_replay(replay)
 
 
 @app.post("/api/game/undo", response_model=GameSnapshotDTO)

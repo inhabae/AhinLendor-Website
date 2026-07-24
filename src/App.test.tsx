@@ -54,7 +54,7 @@ describe('AhinLendor routing and setup', () => {
 
   it('opens Quick Game from the home mode card and updates the URL', async () => {
     render(<App />);
-    fireEvent.click(screen.getAllByRole('button', { name: /quick game/i })[1]);
+    fireEvent.click(screen.getByRole('button', { name: /play as player 1/i }));
     expect(window.location.pathname).toBe('/quick');
     await waitFor(() => {
       expect(vi.mocked(fetch)).toHaveBeenCalledWith(
@@ -67,9 +67,14 @@ describe('AhinLendor routing and setup', () => {
     });
   });
 
-  it('restores Analysis from a direct URL', async () => {
+  it('prompts before starting Analysis from a direct URL', async () => {
     window.history.replaceState({}, '', '/analysis');
     render(<App />);
+    expect(screen.getByRole('heading', { name: 'Analysis' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /load replay/i })).toBeInTheDocument();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith('/api/game/new', expect.anything());
+
+    fireEvent.click(screen.getByRole('button', { name: /new analysis/i }));
     await waitFor(() => {
       expect(vi.mocked(fetch)).toHaveBeenCalledWith(
         '/api/game/new',

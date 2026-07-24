@@ -6,6 +6,7 @@ export function BoardViewport({
   evalBarBottomHeight,
   evalLabel,
   evalSide,
+  evalUnresolved = false,
   children,
 }: {
   showEvaluation: boolean;
@@ -13,12 +14,13 @@ export function BoardViewport({
   evalBarBottomHeight: number;
   evalLabel?: string | null;
   evalSide?: 'white' | 'black' | 'neutral';
+  evalUnresolved?: boolean;
   children: ReactNode;
 }) {
   return (
     <div className="board-analysis-shell">
       <div
-        className={`eval-bar-wrap ${showEvaluation ? '' : 'hidden'}`}
+        className={`eval-bar-wrap ${showEvaluation ? '' : 'hidden'} ${evalUnresolved ? 'unresolved' : ''}`}
         aria-label="Evaluation bar"
         aria-hidden={!showEvaluation}
       >

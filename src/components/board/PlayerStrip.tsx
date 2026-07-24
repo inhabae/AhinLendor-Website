@@ -21,22 +21,18 @@ export function PlayerStrip({
 }) {
   const mctsReservedSlot = player.is_to_move && mctsTopAction?.placement_hint.zone === 'reserved_card' ? mctsTopAction.placement_hint.slot : undefined;
   const modelReservedSlot = player.is_to_move && modelTopAction?.placement_hint.zone === 'reserved_card' ? modelTopAction.placement_hint.slot : undefined;
-  const playerRoleLabel = player.role_label;
+  const playerRoleLabel = player.role_label ?? (seat === 'P0' ? 'Player 1' : 'Player 2');
   return (
     <section className="player-strip" aria-label={`Player ${seat} state`}>
       <div className="player-strip-header">
-        <h3>
-          {playerRoleLabel ? (
-            <>
-              <span className="player-seat-label">{player.display_name}</span>
-              <span className="player-role-label">{playerRoleLabel}</span>
-            </>
-          ) : (
-            <span className="player-role-label">{player.display_name}</span>
-          )}
+        <h3 className="player-title-stack">
+          {playerRoleLabel && <span className="player-seat-label">{playerRoleLabel}</span>}
+          <span className="player-role-label">{player.display_name}</span>
         </h3>
-        {!isTerminal && player.is_to_move && <div className="turn-badge">To Move</div>}
-        <div className="point-badge">{player.points}★</div>
+        <div className="player-badges">
+          {!isTerminal && player.is_to_move && <div className="turn-badge">To Move</div>}
+          <div className="point-badge">{player.points}★</div>
+        </div>
       </div>
 
       <div className="player-row compact">

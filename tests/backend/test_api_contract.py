@@ -99,3 +99,5 @@ def test_save_load_routes_are_exposed() -> None:
 
     assert "/api/game/save" in route_paths
     assert "/api/game/load" in route_paths
+    assert "/api/game/replay" in route_paths
+    assert "/api/game/replay/load" in route_paths
